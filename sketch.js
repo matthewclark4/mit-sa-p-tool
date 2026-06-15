@@ -1,6 +1,11 @@
-let svgEl;
-let svgLoaded = false;
-const SVG_W = 341, SVG_H = 100;
+const LOGOS = [
+    { src: 'images/logo-2.svg', w: 1310.19, h: 451.87 },
+    { src: 'images/logo-3.svg', w: 1052.33, h: 296.52 },
+    { src: 'images/logo-4.svg', w: 1058.14, h: 296.52 },
+];
+
+let logos = LOGOS.map(() => ({ el: new Image(), loaded: false }));
+let logoIdx = 0;
 
 let tt = 0, ttTgt = 1, frame = 0, canvas;
 var ran = Math.random() * 10;
@@ -11,9 +16,10 @@ function setup() {
     frameRate(30);
     canvas = createCanvas(window.innerWidth, window.innerHeight);
 
-    svgEl = new Image();
-    svgEl.onload = () => { svgLoaded = true; };
-    svgEl.src = 'images/logo-1.svg';
+    LOGOS.forEach((def, i) => {
+        logos[i].el.onload = () => { logos[i].loaded = true; };
+        logos[i].el.src = def.src;
+    });
 
     buildUI();
 }
@@ -25,14 +31,17 @@ function draw() {
     if (tt % 600 == 0) ran = Math.random() * 10;
 
     background(255);
-    if (!svgLoaded) return;
-    splitLogo(0, 0, canvas.width, canvas.height, 0, 0, SVG_W, SVG_H, 0, 1);
+    let logo = logos[logoIdx];
+    if (!logo.loaded) return;
+    let def = LOGOS[logoIdx];
+    splitLogo(0, 0, canvas.width, canvas.height, 0, 0, def.w, def.h, 0, 1);
 }
 
 // ── Logo slice ────────────────────────────────────────────────────────────────
 
 function drawRegion(x, y, w, h, ix, iy, iw, ih) {
     if (w < 0.5 || h < 0.5 || iw < 0.01 || ih < 0.01) return;
+    let def = LOGOS[logoIdx];
     let scaleX = w / iw;
     let scaleY = h / ih;
     let ctx = drawingContext;
@@ -40,7 +49,9 @@ function drawRegion(x, y, w, h, ix, iy, iw, ih) {
     ctx.beginPath();
     ctx.rect(x, y, w, h);
     ctx.clip();
-    ctx.drawImage(svgEl, x - ix * scaleX, y - iy * scaleY, SVG_W * scaleX, SVG_H * scaleY);
+    ctx.drawImage(logos[logoIdx].el,
+        x - ix * scaleX, y - iy * scaleY,
+        def.w * scaleX,  def.h * scaleY);
     ctx.restore();
 }
 
@@ -87,6 +98,27 @@ function buildUI() {
         fontFamily: 'monospace', fontSize: '10px',
         color: '#222', userSelect: 'none', width: '130px'
     });
+
+    // version dropdown
+    let sel = document.createElement('select');
+    css(sel, {
+        background: 'rgba(255,255,255,0.6)', color: '#222',
+        border: '1px solid rgba(0,0,0,0.15)', borderRadius: '5px',
+        padding: '3px 6px', fontFamily: 'monospace', fontSize: '10px',
+        cursor: 'pointer', width: '100%'
+    });
+    [['v1 - logo 2', 0], ['v2 - logo 3', 1], ['v3 - logo 4', 2]].forEach(([label, idx]) => {
+        let opt = document.createElement('option');
+        opt.value = idx; opt.textContent = label;
+        if (idx === logoIdx) opt.selected = true;
+        sel.appendChild(opt);
+    });
+    sel.addEventListener('change', () => { logoIdx = parseInt(sel.value); });
+    panel.appendChild(sel);
+
+    let hr = document.createElement('div');
+    css(hr, { borderTop: '1px solid rgba(0,0,0,0.15)', margin: '2px 0' });
+    panel.appendChild(hr);
 
     addSliderRow(panel, 'slices',    2,    12,  maxDepth, 1,    v => { maxDepth = v; });
     addSliderRow(panel, 'cell size', 0,  0.45,  minRatio, 0.01, v => { minRatio = v; });
