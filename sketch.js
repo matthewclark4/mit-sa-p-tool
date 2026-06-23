@@ -15,6 +15,7 @@ let logoFrameTimer = 0;
 const LOGO_INTERVAL = 150; // frames (~5 s at 30 fps)
 
 let tt = 0, ttTgt = 1, frame = 0, canvas;
+let paused = false;
 var ran = Math.random() * 10;
 let maxDepth = 3;
 let minRatio  = 0.30;
@@ -105,9 +106,11 @@ function setup() {
 
 function draw() {
     frame++;
-    tt += (ttTgt - tt) / 4;
-    if (frame % 30 == 0) ttTgt = frame * 2;
-    if (tt % 600 == 0) ran = Math.random() * 10;
+    if (!paused) {
+        tt += (ttTgt - tt) / 4;
+        if (frame % 30 == 0) ttTgt = frame * 2;
+        if (tt % 600 == 0) ran = Math.random() * 10;
+    }
 
     // Sync text overlay divs to previous frame's claimed cell bounds (1 frame behind — imperceptible)
     textBlocks.forEach(tb => {
@@ -127,7 +130,7 @@ function draw() {
     textBlocks.forEach(tb => { tb.bounds = null; });
 
     // randomise logo cycling
-    if (randomLogo) {
+    if (randomLogo && !paused) {
         logoFrameTimer++;
         if (logoFrameTimer >= LOGO_INTERVAL) {
             logoFrameTimer = 0;
@@ -329,8 +332,7 @@ function updateSwarm() {
 }
 
 function drawSwarm() {
-    swarmTT += 1.8; // faster tick → more cell movement
-    updateSwarm();
+    if (!paused) { swarmTT += 1.8; updateSwarm(); }
     background(255);
     if (!logoEls[logoIdx].loaded) return;
     splitLogoMouse(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
@@ -576,9 +578,9 @@ function walkerInfluence(x, y, w, h) {
 }
 
 function drawWalker() {
-    walkerTT += 0.5;
+    if (!paused) walkerTT += 0.5;
     if (walkers.length === 0) initWalkers();
-    updateWalkers();
+    if (!paused) updateWalkers();
     background(255);
     if (!logoEls[logoIdx].loaded) return;
     splitLogoWalker(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
@@ -742,9 +744,9 @@ function expanderInfluence(x, y, w, h) {
 }
 
 function drawExpand() {
-    expandTT += 0.5;
+    if (!paused) expandTT += 0.5;
     if (expanders.length === 0) initExpanders();
-    updateExpanders();
+    if (!paused) updateExpanders();
     background(255);
     if (!logoEls[logoIdx].loaded) return;
     splitLogoExpand(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
@@ -1072,6 +1074,32 @@ function addTextBlock(initialText) {
     return tb;
 }
 
+// ── export ────────────────────────────────────────────────────────────────────
+
+function savePNG() {
+    saveCanvas('mit-tool-' + Date.now(), 'png');
+}
+
+function saveSVG() {
+    let png = canvas.elt.toDataURL('image/png');
+    let w = canvas.width, h = canvas.height;
+    let svg = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"`,
+        `     width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
+        `  <image width="${w}" height="${h}" xlink:href="${png}"/>`,
+        '</svg>'
+    ].join('\n');
+    let blob = new Blob([svg], { type: 'image/svg+xml' });
+    let a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'mit-tool-' + Date.now() + '.svg';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+}
+
 // ── UI ────────────────────────────────────────────────────────────────────────
 
 function buildUI() {
@@ -1251,6 +1279,55 @@ function buildUI() {
     });
     panel.appendChild(addTextBtn);
     // ── end content cells ─────────────────────────────────────────────────────
+
+    // ── Playback + export ─────────────────────────────────────────────────────
+    let hr3 = document.createElement('hr');
+    css(hr3, { borderTop: '1px solid rgba(0,0,0,0.15)', margin: '2px 0' });
+    panel.appendChild(hr3);
+
+    // Pause / play button
+    let pauseBtn = document.createElement('button');
+    pauseBtn.textContent = 'pause';
+    css(pauseBtn, { fontSize: '11px', padding: '3px 6px', cursor: 'pointer', width: '100%' });
+
+    // Seed slider — shown only when paused
+    let seedRow = document.createElement('div');
+    seedRow.style.display = 'none';
+    let seedCtrl = addSliderRow(seedRow, 'seed', 0, 600, 0, 1, v => {
+        if (!paused) return;
+        // Scrub all timers proportionally from the seed value
+        tt    = v * 3;
+        ttTgt = tt;
+        swarmTT  = v * 3.6;
+        walkerTT = v * 0.5;
+        expandTT = v * 0.5;
+    });
+
+    pauseBtn.addEventListener('click', () => {
+        paused = !paused;
+        pauseBtn.textContent = paused ? 'play' : 'pause';
+        seedRow.style.display = paused ? 'block' : 'none';
+        if (paused) loop(); // keep draw() ticking so the frozen frame still renders
+    });
+
+    panel.appendChild(pauseBtn);
+    panel.appendChild(seedRow);
+
+    // Save buttons
+    let saveRow = document.createElement('div');
+    css(saveRow, { display: 'flex', gap: '4px' });
+    let savePngBtn = document.createElement('button');
+    savePngBtn.textContent = 'save png';
+    css(savePngBtn, { flex: '1', fontSize: '11px', padding: '3px 4px', cursor: 'pointer' });
+    savePngBtn.addEventListener('click', savePNG);
+    let saveSvgBtn = document.createElement('button');
+    saveSvgBtn.textContent = 'save svg';
+    css(saveSvgBtn, { flex: '1', fontSize: '11px', padding: '3px 4px', cursor: 'pointer' });
+    saveSvgBtn.addEventListener('click', saveSVG);
+    saveRow.appendChild(savePngBtn);
+    saveRow.appendChild(saveSvgBtn);
+    panel.appendChild(saveRow);
+    // ── end playback + export ─────────────────────────────────────────────────
 
     document.body.appendChild(panel);
 }
