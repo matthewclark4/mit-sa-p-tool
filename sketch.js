@@ -60,6 +60,15 @@ const MITOSIS_THRESHOLD = 150; // both w and h must exceed this (px) to trigger
 // walker mode — multiple drifting points that reveal the grid
 let walkers = [];
 let walkerTT = 0;
+
+// expand mode — static origin points, narrow roots shoot outward and fade behind tip
+let expanders = [];
+let expandTT  = 0;
+const EXPAND_ROOT_SPEED  = 2.2;   // px per frame tip growth
+const EXPAND_ROOT_SIGMA  = 70;    // Gaussian width of each root (px)
+const EXPAND_ROOT_TRAIL  = 120;   // frames of trail per arm (longer = fades later)
+const EXPAND_ROOT_COUNT  = 5;     // arms per expander
+const EXPAND_ROOT_CURVE  = 0.012; // max angular drift per frame (organic curvature)
 const WALKER_SIGMA  = 120; // Gaussian falloff radius (px)
 const WALKER_TRAIL  = 90;  // frames of position history per walker (~3 s at 30 fps)
 
@@ -132,6 +141,7 @@ function draw() {
     if (movement === 'swarm')   { drawSwarm(); return; }
     if (movement === 'organic') { drawGrow(); return; }
     if (movement === 'walker')  { drawWalker(); return; }
+    if (movement === 'expand')  { drawExpand(); return; }
 
     background(255);
     if (!logoEls[logoIdx].loaded) return;
@@ -509,10 +519,13 @@ function renderZoomedContent(x, y, w, h, ix, iy, iw, ih, s) {
 
 function initWalkers() {
     walkers = [];
-    for (let i = 0; i < 4; i++) {
+    const COUNT = 10;
+    for (let i = 0; i < COUNT; i++) {
+        // Spread across a grid of starting zones so they don't all cluster
+        let col = i % 4, row = Math.floor(i / 4);
         walkers.push({
-            x:  canvas.width  * (0.2 + 0.6 * Math.random()),
-            y:  canvas.height * (0.2 + 0.6 * Math.random()),
+            x:  canvas.width  * ((col + 0.3 + Math.random() * 0.4) / 4),
+            y:  canvas.height * ((row + 0.3 + Math.random() * 0.4) / 3),
             vx: (Math.random() - 0.5) * 3,
             vy: (Math.random() - 0.5) * 3,
             trail: [],
@@ -630,6 +643,165 @@ function renderLeafWalker(x, y, w, h, ix, iy, iw, ih, nodeId) {
     if (showTextile) {
         drawTextileCell(x, y, w, h, ix, iy, iw, ih, nodeId);
         return;
+    }
+    randomSeed(nodeId * 17 + 3331);
+    let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
+    if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
+        drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
+    } else if (showGrid) {
+        fill(255); stroke(0); strokeWeight(0.5); rect(x, y, w, h);
+    } else if (showLogo) {
+        drawRegion(x, y, w, h, ix, iy, iw, ih);
+    } else {
+        fill(255); noStroke(); rect(x, y, w, h);
+    }
+    if (showOutline) { noFill(); stroke(0); strokeWeight(0.5); rect(x, y, w, h); }
+}
+
+// ── expand mode ───────────────────────────────────────────────────────────────
+
+// Build one expander with EXPAND_ROOT_COUNT arms. Pre-simulate `startFrames` so
+// expanders initialised at different phases are already mid-growth.
+function makeExpander(startFrames) {
+    let diag = Math.sqrt(canvas.width ** 2 + canvas.height ** 2);
+    let cx = canvas.width  * (0.15 + Math.random() * 0.70);
+    let cy = canvas.height * (0.15 + Math.random() * 0.70);
+    let arms = [];
+    for (let i = 0; i < EXPAND_ROOT_COUNT; i++) {
+        // Spread base angles evenly with a small random offset
+        let angle  = (i / EXPAND_ROOT_COUNT) * Math.PI * 2 + (Math.random() - 0.5) * 0.8;
+        let dAngle = (Math.random() - 0.5) * 2 * EXPAND_ROOT_CURVE;
+        let speed  = EXPAND_ROOT_SPEED * (0.7 + Math.random() * 0.6);
+        let ax = cx, ay = cy, r = 0;
+        let trail = [];
+        // Pre-simulate to stagger phases
+        for (let f = 0; f < startFrames; f++) {
+            angle += dAngle;
+            ax += speed * Math.cos(angle);
+            ay += speed * Math.sin(angle);
+            r  += speed;
+            trail.push({ x: ax, y: ay });
+            if (trail.length > EXPAND_ROOT_TRAIL) trail.shift();
+        }
+        arms.push({ angle, dAngle, x: ax, y: ay, r, trail, speed, done: r >= diag });
+    }
+    return { cx, cy, arms, maxR: diag };
+}
+
+function initExpanders() {
+    expanders = [];
+    const COUNT = 6;
+    let diag = Math.sqrt(canvas.width ** 2 + canvas.height ** 2);
+    let maxFrames = Math.round(diag / EXPAND_ROOT_SPEED);
+    for (let i = 0; i < COUNT; i++) {
+        expanders.push(makeExpander(Math.round(maxFrames * i / COUNT)));
+    }
+}
+
+function updateExpanders() {
+    let diag = Math.sqrt(canvas.width ** 2 + canvas.height ** 2);
+    for (let i = expanders.length - 1; i >= 0; i--) {
+        let e = expanders[i];
+        let allDone = true;
+        for (let arm of e.arms) {
+            if (arm.done) continue;
+            arm.angle += arm.dAngle;
+            arm.x += arm.speed * Math.cos(arm.angle);
+            arm.y += arm.speed * Math.sin(arm.angle);
+            arm.r += arm.speed;
+            arm.trail.push({ x: arm.x, y: arm.y });
+            if (arm.trail.length > EXPAND_ROOT_TRAIL) arm.trail.shift();
+            if (arm.r >= e.maxR) arm.done = true;
+            else allDone = false;
+        }
+        if (allDone) {
+            expanders.splice(i, 1);
+            expanders.push(makeExpander(0));
+        }
+    }
+}
+
+// Influence = proximity to any arm's trail, weighted by recency (tip = brightest).
+function expanderInfluence(x, y, w, h) {
+    let maxInf = 0;
+    let sig2 = EXPAND_ROOT_SIGMA * EXPAND_ROOT_SIGMA;
+    let px = x + w * 0.5, py = y + h * 0.5;
+    for (let e of expanders) {
+        for (let arm of e.arms) {
+            let n = arm.trail.length;
+            for (let t = 0; t < n; t++) {
+                let weight = Math.sqrt((t + 1) / n); // older = dimmer
+                let pos = arm.trail[t];
+                let d2 = (px - pos.x) ** 2 + (py - pos.y) ** 2;
+                let inf = weight * Math.exp(-d2 / sig2);
+                if (inf > maxInf) maxInf = inf;
+            }
+        }
+    }
+    return maxInf;
+}
+
+function drawExpand() {
+    expandTT += 0.5;
+    if (expanders.length === 0) initExpanders();
+    updateExpanders();
+    background(255);
+    if (!logoEls[logoIdx].loaded) return;
+    splitLogoExpand(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
+}
+
+function splitLogoExpand(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
+    let { amp } = LOGO;
+    let crx = 0.5 + amp * Math.sin(expandTT * (0.003 + n * 0.003) + n * 50);
+    crx = Math.max(Math.min(crx, 1 - minRatio), minRatio);
+    let cry = 0.5 + amp * Math.cos(expandTT * (0.003 + n * 0.003) + n * 9930);
+    cry = Math.max(Math.min(cry, 1 - minRatio), minRatio);
+
+    if (n >= maxDepth) {
+        renderLeafExpand(x, y, w, h, ix, iy, iw, ih, nodeId);
+        return;
+    }
+
+    let ww = w * crx, ww2 = w * (1 - crx);
+    let hh = h * cry, hh2 = h * (1 - cry);
+    let iww = iw * 0.5, iww2 = iw * 0.5;
+    let ihh = ih * 0.5, ihh2 = ih * 0.5;
+    if (n <= 1) {
+        splitLogoExpand(x,    y,    ww,  hh,  ix,     iy,     iww,  ihh,  n+1, nodeId*4+0);
+        splitLogoExpand(x+ww, y,    ww2, hh,  ix+iww, iy,     iww2, ihh,  n+1, nodeId*4+1);
+        splitLogoExpand(x,    y+hh, ww,  hh2, ix,     iy+ihh, iww,  ihh2, n+1, nodeId*4+2);
+        splitLogoExpand(x+ww, y+hh, ww2, hh2, ix+iww, iy+ihh, iww2, ihh2, n+1, nodeId*4+3);
+    } else if (nodeId % 2 == 0) {
+        splitLogoExpand(x,    y, ww,  h, ix,     iy, iww,  ih, n+1, nodeId*2+0);
+        splitLogoExpand(x+ww, y, ww2, h, ix+iww, iy, iww2, ih, n+1, nodeId*2+1);
+    } else {
+        splitLogoExpand(x, y,    w, hh,  ix, iy,     iw, ihh,  n+1, nodeId*2+0);
+        splitLogoExpand(x, y+hh, w, hh2, ix, iy+ihh, iw, ihh2, n+1, nodeId*2+1);
+    }
+}
+
+function renderLeafExpand(x, y, w, h, ix, iy, iw, ih, nodeId) {
+    // Content cells always visible
+    if (showHeading && !_headingClaimed && headingImg && w >= HEADING_MIN_W && h >= HEADING_MIN_H) {
+        _headingClaimed = true; drawHeadingCell(x, y, w, h); return;
+    }
+    if (_textClaimedIdx < textBlocks.length && textBlocks[_textClaimedIdx].text && w >= TEXT_MIN_W && h >= TEXT_MIN_H) {
+        textBlocks[_textClaimedIdx].bounds = { x, y, w, h }; _textClaimedIdx++;
+        drawTextBgCell(x, y, w, h); return;
+    }
+
+    let inf = expanderInfluence(x, y, w, h);
+
+    if (inf < 0.05) {
+        fill(255); noStroke(); rect(x, y, w, h); return;
+    }
+    if (inf < 0.30) {
+        fill(255); stroke(0); strokeWeight(0.5); rect(x, y, w, h); return;
+    }
+
+    // Fully inside the ring — reveal content
+    if (showTextile) {
+        drawTextileCell(x, y, w, h, ix, iy, iw, ih, nodeId); return;
     }
     randomSeed(nodeId * 17 + 3331);
     let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
@@ -921,7 +1093,7 @@ function buildUI() {
     let slicesCtrl, cellCtrl, imagesSliderCtrl, imagesCtrl, outlineCtrl, randomLogoCtrl, camHCtrl, camVCtrl; // forward refs for per-mode defaults
     let movRow = document.createElement('div');
     css(movRow, { display: 'flex', flexWrap: 'wrap', gap: '4px' });
-    [['x/y','xy'], ['x/y/z','xyz'], ['swarm','swarm'], ['grow','organic'], ['walk','walker']].forEach(([label, modeKey]) => {
+    [['Reconfigure','xy'], ['x/y/z','xyz'], ['Follow','swarm'], ['Divide','organic'], ['Swarm','walker'], ['Grow','expand']].forEach(([label, modeKey]) => {
         let btn = document.createElement('button');
         btn.textContent = label;
         btn.dataset.mode = modeKey;
@@ -963,7 +1135,11 @@ function buildUI() {
                 }
                 if (movement === 'walker')  {
                     walkers = []; walkerTT = 0;
-                    slicesCtrl.set(12); cellCtrl.set(0.45);
+                    slicesCtrl.set(10); cellCtrl.set(0.40);
+                }
+                if (movement === 'expand')  {
+                    expanders = []; expandTT = 0;
+                    slicesCtrl.set(10); cellCtrl.set(0.40); outlineCtrl.set(false);
                 }
             }
         });
@@ -1063,7 +1239,7 @@ function buildUI() {
     }
 
     // Default one text block
-    let defaultTb = addTextBlock('Add your description text here.');
+    let defaultTb = addTextBlock('');
     addTextBlockUI(defaultTb);
 
     let addTextBtn = document.createElement('button');
