@@ -1,18 +1,45 @@
-const RAND_LOGOS = [
-    { src: 'images/01-LOGOS/logo-1.svg', w:  341,     h:  100,    contentH:  97.35, amp: 0.50, stopP: 0.20 },
-    { src: 'images/01-LOGOS/logo-2.svg', w: 1107.8,   h:  414.72, contentH: 346.54, amp: 0.50, stopP: 0.20 },
-    { src: 'images/01-LOGOS/logo-3.svg', w: 1330.66,  h:  391.4,  contentH: 383.91, amp: 0.50, stopP: 0.20 },
-    { src: 'images/01-LOGOS/logo-5.svg', w: 1057.68,  h:  267.8,  contentH: 267.8,  amp: 0.50, stopP: 0.20 },
-    { src: 'images/01-LOGOS/logo-7.svg', w:  115.43,  h:   52.18, contentH:  36.18, amp: 0.50, stopP: 0.20 },
-    { src: 'images/01-LOGOS/logo-8.svg', w: 1364.57,  h:  425.51, contentH: 310.18, amp: 0.50, stopP: 0.20 },
-    { src: 'images/01-LOGOS/logo-9.svg', w: 1390.13,  h:  420.39, contentH: 409.03, amp: 0.50, stopP: 0.20 },
-];
-let logoIdx = 4; // default: logo-7
-let LOGO = RAND_LOGOS[logoIdx];
-let logoEls = RAND_LOGOS.map(() => ({ el: new Image(), loaded: false }));
+// ── logo sets — one per folder ────────────────────────────────────────────────
+const LOGO_SETS = {
+    sap: [
+        { src: 'images/01-LOGOS/logo-1.svg', w:  341,     h:  100,    contentH:  97.35, amp: 0.50, stopP: 0.20 },
+        { src: 'images/01-LOGOS/logo-2.svg', w: 1107.8,   h:  414.72, contentH: 346.54, amp: 0.50, stopP: 0.20 },
+        { src: 'images/01-LOGOS/logo-3.svg', w: 1330.66,  h:  391.4,  contentH: 383.91, amp: 0.50, stopP: 0.20 },
+        { src: 'images/01-LOGOS/logo-4.svg', w: 1364.57,  h:  425.51, contentH: 310.18, amp: 0.50, stopP: 0.20 },
+        { src: 'images/01-LOGOS/logo-5.svg', w: 1390.13,  h:  420.39, contentH: 409.03, amp: 0.50, stopP: 0.20 },
+    ],
+    mitsap: [
+        { src: 'images/02-LOGOS/mit-sap-01.svg', w: 230.4,  h: 62.85, contentH: 62.85, amp: 0.50, stopP: 0.20 },
+        { src: 'images/02-LOGOS/mit-sap-02.svg', w: 225.09, h: 59.2,  contentH: 59.2,  amp: 0.50, stopP: 0.20 },
+        { src: 'images/02-LOGOS/mit-sap-03.svg', w: 230.4,  h: 55.79, contentH: 55.79, amp: 0.50, stopP: 0.20 },
+        { src: 'images/02-LOGOS/mit-sap-04.svg', w: 230.4,  h: 54.01, contentH: 54.01, amp: 0.50, stopP: 0.20 },
+        { src: 'images/02-LOGOS/mit-sap-05.svg', w: 225.09, h: 59.2,  contentH: 59.2,  amp: 0.50, stopP: 0.20 },
+    ],
+    full: [
+        { src: 'images/03-LOGOS/full-01.svg', w: 381.99, h: 162.85, contentH: 162.85, amp: 0.50, stopP: 0.20 },
+        { src: 'images/03-LOGOS/full-02.svg', w: 381.99, h: 141.76, contentH: 141.76, amp: 0.50, stopP: 0.20 },
+        { src: 'images/03-LOGOS/full-03.svg', w: 381.99, h: 141.76, contentH: 141.76, amp: 0.50, stopP: 0.20 },
+        { src: 'images/03-LOGOS/full-04.svg', w: 381.99, h: 141.76, contentH: 141.76, amp: 0.50, stopP: 0.20 },
+        { src: 'images/03-LOGOS/full-05.svg', w: 381.99, h: 162.85, contentH: 162.85, amp: 0.50, stopP: 0.20 },
+    ],
+};
+
+// Pre-load images for all sets at startup so switching is instant
+const LOGO_EL_SETS    = {};
+const OUTLINE_EL_SETS = {};
+Object.keys(LOGO_SETS).forEach(k => {
+    LOGO_EL_SETS[k]    = LOGO_SETS[k].map(() => ({ el: new Image(), loaded: false }));
+    OUTLINE_EL_SETS[k] = LOGO_SETS[k].map(() => ({ el: new Image(), loaded: false }));
+});
+
+let activeLogoSetKey = 'sap';
+let RAND_LOGOS = LOGO_SETS[activeLogoSetKey];
+let logoIdx    = 0; // default within sap set (logo-1)
+let LOGO       = RAND_LOGOS[logoIdx];
+let logoEls    = LOGO_EL_SETS[activeLogoSetKey];
 let randomLogo = false;
 let logoFrameTimer = 0;
 const LOGO_INTERVAL = 150; // frames (~5 s at 30 fps)
+let _logoShuffleQueue = [];
 
 let tt = 0, ttTgt = 1, frame = 0, canvas;
 let paused = false;
@@ -20,16 +47,26 @@ var ran = Math.random() * 10;
 let maxDepth = 3;
 let minRatio  = 0.30;
 
-const EXTRA_IMAGES_SRC = Array.from({length: 73}, (_, i) =>
-    `images/imgs/${String(i + 1).padStart(2, '0')}.png`
-);
+const EXTRA_IMAGES_SRC = [
+    'images/imgs/01.png', 'images/imgs/02.png', 'images/imgs/03.jpg', 'images/imgs/03.png',
+    'images/imgs/04.png', 'images/imgs/05.png', 'images/imgs/06.jpg', 'images/imgs/07.jpg',
+    'images/imgs/08.jpg', 'images/imgs/09.png', 'images/imgs/10.png', 'images/imgs/11.png',
+    'images/imgs/12.png', 'images/imgs/13.png', 'images/imgs/14.png', 'images/imgs/15.png',
+    'images/imgs/16.png', 'images/imgs/17.png', 'images/imgs/18.png', 'images/imgs/19.png',
+    'images/imgs/20.png', 'images/imgs/21.png', 'images/imgs/22.png', 'images/imgs/23.jpg',
+    'images/imgs/24.jpg', 'images/imgs/25.jpg', 'images/imgs/26.jpg', 'images/imgs/27.jpg',
+    'images/imgs/28.jpg',
+];
 let extraImages = new Array(EXTRA_IMAGES_SRC.length).fill(null);
 let imgCount     = 1;
 let showImages   = false;
 let showLogo     = true;
-let showGrid     = false;
-let showOutline  = true;
-let showTextile  = false;
+let showGrid      = false;
+let showOutline   = false;
+let showTextile   = false;
+let logoOnly      = false; // Swarm/Grow: skip white cells, show revealed logo only
+let bgColor       = '#523333';
+let logoColor     = '#5b83fb';
 
 // ── content cells — heading SVG + text blocks ─────────────────────────────────
 let headingImg  = null;    // Image element for uploaded SVG heading
@@ -44,7 +81,7 @@ let textBlocks = [];
 let _headingClaimed = false;
 let _textClaimedIdx = 0;
 
-let outlineEls = RAND_LOGOS.map(() => ({ el: new Image(), loaded: false }));
+let outlineEls = OUTLINE_EL_SETS[activeLogoSetKey];
 
 // ── movement mode ─────────────────────────────────────────────────────────────
 let movement = 'xy'; // 'xy' | 'xyz' | 'swarm'
@@ -86,11 +123,14 @@ function setup() {
     frameRate(30);
     canvas = createCanvas(window.innerWidth, window.innerHeight);
 
-    RAND_LOGOS.forEach((def, i) => {
-        logoEls[i].el.onload = () => { logoEls[i].loaded = true; };
-        logoEls[i].el.src = def.src;
-        outlineEls[i].el.onload = () => { outlineEls[i].loaded = true; };
-        outlineEls[i].el.src = def.src.replace('01-LOGOS/', '01-LOGOS/outlined/');
+    Object.keys(LOGO_SETS).forEach(k => {
+        LOGO_SETS[k].forEach((def, i) => {
+            LOGO_EL_SETS[k][i].el.onload = () => { LOGO_EL_SETS[k][i].loaded = true; };
+            LOGO_EL_SETS[k][i].el.src = def.src;
+            OUTLINE_EL_SETS[k][i].el.onload = () => { OUTLINE_EL_SETS[k][i].loaded = true; };
+            // Insert outlined/ before the filename: images/01-LOGOS/logo-1.svg → images/01-LOGOS/outlined/logo-1.svg
+            OUTLINE_EL_SETS[k][i].el.src = def.src.replace(/([^/]+\.svg)$/, 'outlined/$1');
+        });
     });
 
     EXTRA_IMAGES_SRC.forEach((src, i) => {
@@ -134,9 +174,17 @@ function draw() {
         logoFrameTimer++;
         if (logoFrameTimer >= LOGO_INTERVAL) {
             logoFrameTimer = 0;
-            let next;
-            do { next = Math.floor(Math.random() * RAND_LOGOS.length); } while (next === logoIdx && RAND_LOGOS.length > 1);
-            switchLogo(next);
+            // Refill shuffle queue when empty: all indices except current, in random order
+            if (_logoShuffleQueue.length === 0) {
+                let pool = [];
+                for (let i = 0; i < RAND_LOGOS.length; i++) { if (i !== logoIdx) pool.push(i); }
+                for (let i = pool.length - 1; i > 0; i--) {
+                    let j = Math.floor(Math.random() * (i + 1));
+                    let tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+                }
+                _logoShuffleQueue = pool;
+            }
+            switchLogo(_logoShuffleQueue.pop());
         }
     }
 
@@ -146,22 +194,72 @@ function draw() {
     if (movement === 'walker')  { drawWalker(); return; }
     if (movement === 'expand')  { drawExpand(); return; }
 
-    background(255);
+    background(bgColor);
     if (!logoEls[logoIdx].loaded) return;
     splitLogoImages(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
+}
+
+// ── colour helpers ────────────────────────────────────────────────────────────
+
+function hexToRgb(hex) {
+    return { r: parseInt(hex.slice(1,3),16), g: parseInt(hex.slice(3,5),16), b: parseInt(hex.slice(5,7),16) };
+}
+
+let _logoCache = null, _logoCacheKey = '';
+function getLogoCanvas() {
+    let uploadKey = _uploadedLogoOrigEl ? 'u' : 'n';
+    // Physical canvas dimensions — the SVG must be rasterized at this resolution
+    // so drawImage renders it 1:1 in physical pixels with no upscale blur.
+    let phW = drawingContext.canvas.width;
+    let phH = drawingContext.canvas.height;
+    let key = `${logoIdx}_${activeLogoSetKey}_${uploadKey}_${logoColor}_${bgColor}_${phW}_${phH}`;
+    if (_logoCacheKey === key && _logoCache) return _logoCache;
+    if (!logoEls[logoIdx] || !logoEls[logoIdx].loaded) return null;
+    let el = logoEls[logoIdx].el;
+    // Match the physical destination size: logo fills phW wide,
+    // and LOGO.h/LOGO.contentH tells how much taller it extends beyond the canvas.
+    let tw = phW;
+    let th = Math.max(1, Math.round(phH * LOGO.h / LOGO.contentH));
+    let tc = document.createElement('canvas');
+    tc.width = tw; tc.height = th;
+    let tctx = tc.getContext('2d');
+    tctx.imageSmoothingEnabled = true;
+    tctx.imageSmoothingQuality = 'high';
+    tctx.fillStyle = '#ffffff';
+    tctx.fillRect(0, 0, tw, th);
+    tctx.drawImage(el, 0, 0, tw, th);
+    let bg = hexToRgb(bgColor), lg = hexToRgb(logoColor);
+    let px = tctx.getImageData(0, 0, tw, th);
+    for (let i = 0; i < px.data.length; i += 4) {
+        // t=0 → fully logo (dark), t=1 → fully background (light)
+        // Linear interpolation preserves SVG anti-aliasing at edges
+        let t = (px.data[i] + px.data[i+1] + px.data[i+2]) / (3 * 255);
+        px.data[i]   = Math.round(lg.r + (bg.r - lg.r) * t);
+        px.data[i+1] = Math.round(lg.g + (bg.g - lg.g) * t);
+        px.data[i+2] = Math.round(lg.b + (bg.b - lg.b) * t);
+        px.data[i+3] = 255;
+    }
+    tctx.putImageData(px, 0, 0);
+    _logoCache = tc; _logoCacheKey = key;
+    return tc;
 }
 
 // ── x/y drawing ───────────────────────────────────────────────────────────────
 
 function drawRegion(x, y, w, h, ix, iy, iw, ih) {
     if (w < 0.5 || h < 0.5 || iw < 0.01 || ih < 0.01) return;
-    let ol = outlineEls[logoIdx];
-    let el = (showOutline && ol.loaded) ? ol.el : logoEls[logoIdx].el;
+    let lc = getLogoCanvas();
+    if (!lc) return;
+    // Snap to integers so adjacent cell clips share an exact pixel boundary with no anti-aliased seam
+    let rx = Math.round(x), ry = Math.round(y);
+    let rw = Math.round(x + w) - rx, rh = Math.round(y + h) - ry;
+    if (rw < 1 || rh < 1) return;
     let scaleX = w / iw, scaleY = h / ih;
     let ctx = drawingContext;
     ctx.save();
-    ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-    ctx.drawImage(el, x - ix * scaleX, y - iy * scaleY, LOGO.w * scaleX, LOGO.h * scaleY);
+    ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip();
+    ctx.drawImage(lc, Math.round(x - ix * scaleX), Math.round(y - iy * scaleY),
+                  Math.round(LOGO.w * scaleX), Math.round(LOGO.h * scaleY));
     ctx.restore();
 }
 
@@ -230,18 +328,21 @@ function drawTextileCell(x, y, w, h, ix, iy, iw, ih, nodeId) {
         if (ir > cr) { dh = h; dw = h * ir; dx = x - (dw - w) * 0.5; dy = y; }
         else          { dw = w; dh = w / ir; dx = x; dy = y - (dh - h) * 0.5; }
         ctx.drawImage(img, dx, dy, dw, dh);
-    } else if (showLogo && logoEls[logoIdx].loaded) {
-        let ol = outlineEls[logoIdx];
-        let el = (showOutline && ol.loaded) ? ol.el : logoEls[logoIdx].el;
-        let scaleX = w / iw, scaleY = h / ih;
-        ctx.drawImage(el, x - ix * scaleX, y - iy * scaleY, LOGO.w * scaleX, LOGO.h * scaleY);
+    } else if (showLogo) {
+        let lc = getLogoCanvas();
+        if (lc) {
+            let scaleX = w / iw, scaleY = h / ih;
+            ctx.drawImage(lc, x - ix * scaleX, y - iy * scaleY, LOGO.w * scaleX, LOGO.h * scaleY);
+        } else {
+            ctx.fillStyle = bgColor; ctx.fill();
+        }
     } else {
-        ctx.fillStyle = '#ffffff'; ctx.fill();
+        ctx.fillStyle = bgColor; ctx.fill();
     }
     ctx.restore(); // remove clip — path still live
 
-    // Black stroke on the organic outline
-    ctx.strokeStyle = '#000000'; ctx.lineWidth = 1.5; ctx.stroke();
+    // Stroke on the organic outline
+    ctx.strokeStyle = logoColor; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.restore();
 }
 
@@ -253,9 +354,10 @@ function drawImageCover(img, x, y, w, h) {
     if (ir > cr) { sh = img.naturalHeight; sw = sh * cr; sx = (img.naturalWidth - sw) / 2; sy = 0; }
     else         { sw = img.naturalWidth;  sh = sw / cr; sx = 0; sy = (img.naturalHeight - sh) / 2; }
     let ctx = drawingContext;
+    let rx = Math.round(x), ry = Math.round(y), rw = Math.round(x+w)-rx, rh = Math.round(y+h)-ry;
     ctx.save();
-    ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-    ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+    ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip();
+    ctx.drawImage(img, sx, sy, sw, sh, rx, ry, rw, rh);
     ctx.restore();
 }
 
@@ -278,13 +380,13 @@ function splitLogoImages(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
             if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
                 drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
             } else if (showGrid) {
-                fill(255); stroke(0); strokeWeight(0.5); rect(x, y, w, h);
+                fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
             } else if (showLogo) {
                 drawRegion(x, y, w, h, ix, iy, iw, ih);
             } else {
-                fill(255); noStroke(); rect(x, y, w, h);
+                fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
             }
-            if (showOutline) { noFill(); stroke(0); strokeWeight(0.5); rect(x, y, w, h); }
+            if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
         }
         return;
     }
@@ -333,7 +435,7 @@ function updateSwarm() {
 
 function drawSwarm() {
     if (!paused) { swarmTT += 1.8; updateSwarm(); }
-    background(255);
+    background(bgColor);
     if (!logoEls[logoIdx].loaded) return;
     splitLogoMouse(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
 }
@@ -370,13 +472,13 @@ function splitLogoMouse(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
             if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
                 drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
             } else if (showGrid) {
-                fill(255); stroke(0); strokeWeight(0.5); rect(x, y, w, h);
+                fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
             } else if (showLogo) {
                 drawRegion(x, y, w, h, ix, iy, iw, ih);
             } else {
-                fill(255); noStroke(); rect(x, y, w, h);
+                fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
             }
-            if (showOutline) { noFill(); stroke(0); strokeWeight(0.5); rect(x, y, w, h); }
+            if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
         }
         return;
     }
@@ -402,7 +504,7 @@ function splitLogoMouse(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
 // ── grow (cell division) mode ─────────────────────────────────────────────────
 
 function drawGrow() {
-    background(255);
+    background(bgColor);
     if (!logoEls[logoIdx].loaded) return;
     splitLogoGrow(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
 }
@@ -462,11 +564,11 @@ function renderLeafGrow(x, y, w, h, ix, iy, iw, ih, nodeId) {
         if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
             drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
         } else if (showGrid) {
-            fill(255); stroke(0); strokeWeight(0.5); rect(x, y, w, h);
+            fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
         } else if (showLogo) {
             drawRegion(x, y, w, h, ix, iy, iw, ih);
         } else {
-            fill(255); noStroke(); rect(x, y, w, h);
+            fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
         }
         // Arm mitosis once the cell is large enough in both dimensions
         if (w > MITOSIS_THRESHOLD && h > MITOSIS_THRESHOLD) {
@@ -581,7 +683,7 @@ function drawWalker() {
     if (!paused) walkerTT += 0.5;
     if (walkers.length === 0) initWalkers();
     if (!paused) updateWalkers();
-    background(255);
+    background(bgColor);
     if (!logoEls[logoIdx].loaded) return;
     splitLogoWalker(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
 }
@@ -629,15 +731,12 @@ function renderLeafWalker(x, y, w, h, ix, iy, iw, ih, nodeId) {
     let inf = walkerInfluence(x, y, w, h);
 
     if (inf < 0.05) {
-        // Far outside walker — fully blank
-        fill(255); noStroke(); rect(x, y, w, h);
+        if (!logoOnly) { fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y)); }
         return;
     }
 
     if (inf < 0.30) {
-        // Border zone: the walker's edge IS the grid line.
-        // Show only the cell outline so walker boundary and grid lines merge.
-        fill(255); stroke(0); strokeWeight(0.5); rect(x, y, w, h);
+        if (!logoOnly) { fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y)); }
         return;
     }
 
@@ -651,13 +750,13 @@ function renderLeafWalker(x, y, w, h, ix, iy, iw, ih, nodeId) {
     if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
         drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
     } else if (showGrid) {
-        fill(255); stroke(0); strokeWeight(0.5); rect(x, y, w, h);
+        fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
     } else if (showLogo) {
         drawRegion(x, y, w, h, ix, iy, iw, ih);
     } else {
-        fill(255); noStroke(); rect(x, y, w, h);
+        fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
     }
-    if (showOutline) { noFill(); stroke(0); strokeWeight(0.5); rect(x, y, w, h); }
+    if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
 }
 
 // ── expand mode ───────────────────────────────────────────────────────────────
@@ -747,7 +846,7 @@ function drawExpand() {
     if (!paused) expandTT += 0.5;
     if (expanders.length === 0) initExpanders();
     if (!paused) updateExpanders();
-    background(255);
+    background(bgColor);
     if (!logoEls[logoIdx].loaded) return;
     splitLogoExpand(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
 }
@@ -795,10 +894,12 @@ function renderLeafExpand(x, y, w, h, ix, iy, iw, ih, nodeId) {
     let inf = expanderInfluence(x, y, w, h);
 
     if (inf < 0.05) {
-        fill(255); noStroke(); rect(x, y, w, h); return;
+        if (!logoOnly) { fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y)); }
+        return;
     }
     if (inf < 0.30) {
-        fill(255); stroke(0); strokeWeight(0.5); rect(x, y, w, h); return;
+        if (!logoOnly) { fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y)); }
+        return;
     }
 
     // Fully inside the ring — reveal content
@@ -810,13 +911,13 @@ function renderLeafExpand(x, y, w, h, ix, iy, iw, ih, nodeId) {
     if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
         drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
     } else if (showGrid) {
-        fill(255); stroke(0); strokeWeight(0.5); rect(x, y, w, h);
+        fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
     } else if (showLogo) {
         drawRegion(x, y, w, h, ix, iy, iw, ih);
     } else {
-        fill(255); noStroke(); rect(x, y, w, h);
+        fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
     }
-    if (showOutline) { noFill(); stroke(0); strokeWeight(0.5); rect(x, y, w, h); }
+    if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
 }
 
 // ── x/y/z Three.js depth mode ─────────────────────────────────────────────────
@@ -825,59 +926,61 @@ function setupXYZ() {
     if (xyzReady) return;
     if (!logoEls[logoIdx].loaded) return;
 
-    // Logo texture: draw SVG to offscreen canvas at high res
+    // Logo texture: draw SVG to offscreen canvas at high res, threshold to bgColor/logoColor
     let texW = 2048, texH = Math.max(1, Math.round(2048 * LOGO.h / LOGO.w));
     let oc = document.createElement('canvas');
     oc.width = texW; oc.height = texH;
     let octx = oc.getContext('2d');
-    octx.fillStyle = '#fff';
+    octx.fillStyle = '#ffffff';
     octx.fillRect(0, 0, texW, texH);
     octx.drawImage(logoEls[logoIdx].el, 0, 0, texW, texH);
-
-    // Snap every pixel to pure black or white — removes SVG anti-aliasing gradient
-    let px = octx.getImageData(0, 0, texW, texH);
-    for (let i = 0; i < px.data.length; i += 4) {
-        let v = (px.data[i] + px.data[i+1] + px.data[i+2]) / 3 > 128 ? 255 : 0;
-        px.data[i] = px.data[i+1] = px.data[i+2] = v;
-        px.data[i+3] = 255;
+    { let _bg = hexToRgb(bgColor), _lg = hexToRgb(logoColor);
+      let px = octx.getImageData(0, 0, texW, texH);
+      for (let i = 0; i < px.data.length; i += 4) {
+          let dark = (px.data[i] + px.data[i+1] + px.data[i+2]) / 3 < 128;
+          px.data[i] = dark ? _lg.r : _bg.r; px.data[i+1] = dark ? _lg.g : _bg.g;
+          px.data[i+2] = dark ? _lg.b : _bg.b; px.data[i+3] = 255;
+      }
+      octx.putImageData(px, 0, 0);
     }
-    octx.putImageData(px, 0, 0);
 
     let logoTex = new THREE.CanvasTexture(oc);
     logoTex.magFilter = THREE.NearestFilter;
     logoTex.minFilter = THREE.NearestFilter;
     xyzLogoMat  = new THREE.MeshBasicMaterial({ map: logoTex });
-    xyzGridMat  = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: false });
-    xyzBlankMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
-    // Pre-create image textures for already-loaded images
-    for (let i = 0; i < extraImages.length; i++) {
-        xyzImgMats[i] = null; // lazy — created on first use
-    }
+    // Only create the canvas, renderer, scene, camera, and mesh pool once
+    if (!xyzEl) {
+        xyzGridMat  = new THREE.MeshBasicMaterial({ color: bgColor, wireframe: false });
+        xyzBlankMat = new THREE.MeshBasicMaterial({ color: bgColor });
 
-    // Overlay canvas
-    xyzEl = document.createElement('canvas');
-    css(xyzEl, { position: 'fixed', top: '0', left: '0', width: '100%', height: '100%', display: 'none', pointerEvents: 'none', zIndex: '5' });
-    document.body.appendChild(xyzEl);
+        for (let i = 0; i < extraImages.length; i++) {
+            xyzImgMats[i] = null;
+        }
 
-    xyzRenderer = new THREE.WebGLRenderer({ canvas: xyzEl, antialias: true });
-    xyzRenderer.setSize(window.innerWidth, window.innerHeight);
-    xyzRenderer.setPixelRatio(window.devicePixelRatio || 1);
+        xyzEl = document.createElement('canvas');
+        css(xyzEl, { position: 'fixed', top: '0', left: '0', width: '100%', height: '100%', display: 'none', pointerEvents: 'none', zIndex: '5' });
+        document.body.appendChild(xyzEl);
 
-    xyzScene = new THREE.Scene();
-    xyzScene.background = new THREE.Color(0xffffff);
+        xyzRenderer = new THREE.WebGLRenderer({ canvas: xyzEl, antialias: true });
+        xyzRenderer.setSize(window.innerWidth, window.innerHeight);
+        xyzRenderer.setPixelRatio(window.devicePixelRatio || 1);
 
-    let fov = 60;
-    let d = (window.innerHeight / 2) / Math.tan((fov / 2) * Math.PI / 180);
-    xyzCamera = new THREE.PerspectiveCamera(fov, window.innerWidth / window.innerHeight, 1, d * 10);
-    xyzCamera.position.set(0, 0, d);
+        xyzScene = new THREE.Scene();
+        xyzScene.background = new THREE.Color(bgColor);
 
-    for (let i = 0; i < XYZ_POOL_SIZE; i++) {
-        let geo = new THREE.PlaneGeometry(1, 1);
-        let mesh = new THREE.Mesh(geo, xyzBlankMat);
-        mesh.visible = false;
-        xyzScene.add(mesh);
-        xyzPool.push({ mesh, geo });
+        let fov = 60;
+        let d = (window.innerHeight / 2) / Math.tan((fov / 2) * Math.PI / 180);
+        xyzCamera = new THREE.PerspectiveCamera(fov, window.innerWidth / window.innerHeight, 1, d * 10);
+        xyzCamera.position.set(0, 0, d);
+
+        for (let i = 0; i < XYZ_POOL_SIZE; i++) {
+            let geo = new THREE.PlaneGeometry(1, 1);
+            let mesh = new THREE.Mesh(geo, xyzBlankMat);
+            mesh.visible = false;
+            xyzScene.add(mesh);
+            xyzPool.push({ mesh, geo });
+        }
     }
 
     xyzReady = true;
@@ -1001,18 +1104,63 @@ function switchLogo(idx) {
     if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
 }
 
+function switchLogoSet(key) {
+    clearUploadedLogo();
+    activeLogoSetKey = key;
+    RAND_LOGOS = LOGO_SETS[key];
+    logoEls    = LOGO_EL_SETS[key];
+    outlineEls = OUTLINE_EL_SETS[key];
+    logoIdx    = Math.min(logoIdx, Math.max(0, RAND_LOGOS.length - 1));
+    LOGO       = RAND_LOGOS[logoIdx] || RAND_LOGOS[0];
+    swarmX     = null;
+    _logoShuffleQueue = [];
+    if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
+    else xyzReady = false;
+}
+
+// ── custom uploaded logo (overrides active set) ───────────────────────────────
+let _uploadedLogoOrigEl    = null;
+let _uploadedOutlineOrigEl = null;
+
+function applyUploadedLogo(img) {
+    _uploadedLogoOrigEl    = logoEls[logoIdx];
+    _uploadedOutlineOrigEl = outlineEls[logoIdx];
+    logoEls[logoIdx]    = { el: img, loaded: true };
+    outlineEls[logoIdx] = { el: img, loaded: false };
+    let w = img.naturalWidth  || LOGO.w;
+    let h = img.naturalHeight || LOGO.h;
+    LOGO = { ...LOGO, w, h, contentH: h };
+    swarmX = null;
+    if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
+    else xyzReady = false;
+}
+
+function clearUploadedLogo() {
+    if (!_uploadedLogoOrigEl) return;
+    logoEls[logoIdx]    = _uploadedLogoOrigEl;
+    outlineEls[logoIdx] = _uploadedOutlineOrigEl;
+    _uploadedLogoOrigEl    = null;
+    _uploadedOutlineOrigEl = null;
+    LOGO = RAND_LOGOS[logoIdx] || RAND_LOGOS[0];
+    swarmX = null;
+    if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
+    else xyzReady = false;
+}
+
 function rebuildXYZLogoTex() {
     let texW = 2048, texH = Math.max(1, Math.round(2048 * LOGO.h / LOGO.w));
     let oc = document.createElement('canvas');
     oc.width = texW; oc.height = texH;
     let octx = oc.getContext('2d');
-    octx.fillStyle = '#fff';
+    octx.fillStyle = '#ffffff';
     octx.fillRect(0, 0, texW, texH);
     octx.drawImage(logoEls[logoIdx].el, 0, 0, texW, texH);
+    let _bg = hexToRgb(bgColor), _lg = hexToRgb(logoColor);
     let px = octx.getImageData(0, 0, texW, texH);
     for (let i = 0; i < px.data.length; i += 4) {
-        let v = (px.data[i] + px.data[i+1] + px.data[i+2]) / 3 > 128 ? 255 : 0;
-        px.data[i] = px.data[i+1] = px.data[i+2] = v; px.data[i+3] = 255;
+        let dark = (px.data[i] + px.data[i+1] + px.data[i+2]) / 3 < 128;
+        px.data[i] = dark ? _lg.r : _bg.r; px.data[i+1] = dark ? _lg.g : _bg.g;
+        px.data[i+2] = dark ? _lg.b : _bg.b; px.data[i+3] = 255;
     }
     octx.putImageData(px, 0, 0);
     let newTex = new THREE.CanvasTexture(oc);
@@ -1028,7 +1176,8 @@ function rebuildXYZLogoTex() {
 
 function drawHeadingCell(x, y, w, h) {
     let ctx = drawingContext;
-    ctx.fillStyle = '#ffffff'; ctx.fillRect(x, y, w, h);
+    let rx = Math.round(x), ry = Math.round(y), rw = Math.round(x+w)-rx, rh = Math.round(y+h)-ry;
+    ctx.fillStyle = bgColor; ctx.fillRect(rx, ry, rw, rh);
     if (headingImg && headingImg.complete && headingImg.naturalWidth > 0) {
         let iw = headingImg.naturalWidth || 300, ih = headingImg.naturalHeight || 150;
         let pad = 12, availW = w - 2 * pad, availH = h - 2 * pad;
@@ -1037,13 +1186,13 @@ function drawHeadingCell(x, y, w, h) {
         let dh = ir > cr ? availW / ir : availH;
         ctx.drawImage(headingImg, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
     }
-    if (showOutline) { noFill(); stroke(0); strokeWeight(0.5); rect(x, y, w, h); }
+    if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
 }
 
 function drawTextBgCell(x, y, w, h) {
     // White rectangle — the HTML overlay provides the actual text rendering
-    fill(255); noStroke(); rect(x, y, w, h);
-    if (showOutline) { noFill(); stroke(0); strokeWeight(0.5); rect(x, y, w, h); }
+    fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
+    if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
 }
 
 // Create a new text block entry with its own absolutely-positioned HTML overlay.
@@ -1113,27 +1262,29 @@ function buildUI() {
     });
 
     let title = document.createElement('div');
-    title.textContent = 'Tool';
+    title.textContent = 'Grid Configuration';
     css(title, { fontWeight: 'bold', opacity: '0.7' });
     panel.appendChild(title);
 
-    // Movement toggle — 2×2 grid
-    let slicesCtrl, cellCtrl, imagesSliderCtrl, imagesCtrl, outlineCtrl, randomLogoCtrl, camHCtrl, camVCtrl; // forward refs for per-mode defaults
-    let movRow = document.createElement('div');
-    css(movRow, { display: 'flex', flexWrap: 'wrap', gap: '4px' });
-    [['Reconfigure','xy'], ['x/y/z','xyz'], ['Follow','swarm'], ['Divide','organic'], ['Swarm','walker'], ['Grow','expand']].forEach(([label, modeKey]) => {
+    // Two button groups; all buttons share one active-state tracker so
+    // clicking either group deselects the other.
+    let slicesCtrl, cellCtrl, imagesSliderCtrl, imagesCtrl, randomLogoCtrl, camHCtrl, camVCtrl;
+    let allModeButtons = []; // filled below, used to sync highlight across both groups
+
+    function makeModeBtn(label, modeKey) {
         let btn = document.createElement('button');
         btn.textContent = label;
         btn.dataset.mode = modeKey;
         css(btn, {
             flex: '1 1 calc(50% - 4px)', padding: '3px 0', border: '1px solid rgba(0,0,0,0.2)',
             borderRadius: '4px', fontFamily: 'monospace', fontSize: '10px',
-            cursor: 'pointer', background: btn.dataset.mode === movement
+            cursor: 'pointer', background: modeKey === movement
                 ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.5)'
         });
+        allModeButtons.push(btn);
         btn.addEventListener('click', () => {
             movement = btn.dataset.mode;
-            movRow.querySelectorAll('button').forEach(b => {
+            allModeButtons.forEach(b => {
                 b.style.background = b.dataset.mode === movement
                     ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.5)';
             });
@@ -1142,24 +1293,24 @@ function buildUI() {
                 if (xyzEl) xyzEl.style.display = 'block';
                 camSection.style.display = 'flex';
                 camHCtrl.set(15); camVCtrl.set(0);
-                slicesCtrl.set(3);  cellCtrl.set(0.15); imagesSliderCtrl.set(73);
-                imagesCtrl.set(true); outlineCtrl.set(false); randomLogoCtrl.set(true);
+                slicesCtrl.set(3);  cellCtrl.set(0.15); imagesSliderCtrl.set(29);
+                imagesCtrl.set(false); showOutline = false; randomLogoCtrl.set(false);
             } else {
                 if (xyzEl) xyzEl.style.display = 'none';
                 camSection.style.display = 'none';
                 if (movement === 'xy') {
                     slicesCtrl.set(5);  cellCtrl.set(0.10); imagesSliderCtrl.set(14);
-                    imagesCtrl.set(true); outlineCtrl.set(false); randomLogoCtrl.set(true);
+                    imagesCtrl.set(false); showOutline = false; randomLogoCtrl.set(false);
                 }
                 if (movement === 'swarm') {
                     swarmX = null;
                     slicesCtrl.set(6);  cellCtrl.set(0.25); imagesSliderCtrl.set(6);
-                    imagesCtrl.set(true); outlineCtrl.set(true); randomLogoCtrl.set(true);
+                    imagesCtrl.set(false); showOutline = false; randomLogoCtrl.set(false);
                 }
                 if (movement === 'organic') {
                     mitosisMap.clear();
                     slicesCtrl.set(5);  cellCtrl.set(0.20); imagesSliderCtrl.set(5);
-                    imagesCtrl.set(false); outlineCtrl.set(true); randomLogoCtrl.set(true);
+                    imagesCtrl.set(false); showOutline = false; randomLogoCtrl.set(false);
                 }
                 if (movement === 'walker')  {
                     walkers = []; walkerTT = 0;
@@ -1167,13 +1318,29 @@ function buildUI() {
                 }
                 if (movement === 'expand')  {
                     expanders = []; expandTT = 0;
-                    slicesCtrl.set(10); cellCtrl.set(0.40); outlineCtrl.set(false);
+                    slicesCtrl.set(10); cellCtrl.set(0.40); showOutline = false;
                 }
             }
         });
-        movRow.appendChild(btn);
-    });
-    panel.appendChild(movRow);
+        return btn;
+    }
+
+    // Grid Configuration group — Fast (xy) and Slow (swarm)
+    let gridRow = document.createElement('div');
+    css(gridRow, { display: 'flex', flexWrap: 'wrap', gap: '4px' });
+    [['Fast', 'xy'], ['Slow', 'swarm']].forEach(([label, key]) => gridRow.appendChild(makeModeBtn(label, key)));
+    panel.appendChild(gridRow);
+
+    // Cell Behaviour heading + group
+    let cellBehaviourTitle = document.createElement('div');
+    cellBehaviourTitle.textContent = 'Cell Behaviour';
+    css(cellBehaviourTitle, { fontWeight: 'bold', opacity: '0.7', marginTop: '2px' });
+    panel.appendChild(cellBehaviourTitle);
+
+    let cellRow = document.createElement('div');
+    css(cellRow, { display: 'flex', flexWrap: 'wrap', gap: '4px' });
+    [['x/y/z', 'xyz'], ['Divide', 'organic'], ['Swarm', 'walker'], ['Grow', 'expand']].forEach(([label, key]) => cellRow.appendChild(makeModeBtn(label, key)));
+    panel.appendChild(cellRow);
 
     // Camera orbit sliders — only visible in xyz mode
     let camSection = document.createElement('div');
@@ -1186,24 +1353,97 @@ function buildUI() {
     css(hr0, { borderTop: '1px solid rgba(0,0,0,0.15)', margin: '2px 0' });
     panel.appendChild(hr0);
 
-    slicesCtrl      = addSliderRow(panel, 'slices',    2,   12,                    maxDepth, 1,    v => { maxDepth = v; });
-    cellCtrl        = addSliderRow(panel, 'cell size', 0, 0.45,                   minRatio, 0.01, v => { minRatio = v; });
-    imagesSliderCtrl= addSliderRow(panel, 'images',    1, EXTRA_IMAGES_SRC.length, imgCount, 1,    v => { imgCount = v; });
+    slicesCtrl = addSliderRow(panel, 'slices',    2,   12,    maxDepth, 1,    v => { maxDepth = v; });
+    cellCtrl   = addSliderRow(panel, 'cell size', 0, 0.45,   minRatio, 0.01, v => { minRatio = v; });
 
+    // ── Logo section ──────────────────────────────────────────────────────────
+    let logoHeading = document.createElement('div');
+    logoHeading.textContent = 'Logo';
+    css(logoHeading, { fontWeight: 'bold', opacity: '0.7', marginTop: '2px' });
+    panel.appendChild(logoHeading);
+
+    const LOGO_SET_OPTS = [['SA+P', 'sap'], ['MIT SA+P', 'mitsap'], ['Full', 'full']];
+    let logoSetCbs = {};
+    let logoSetUpdating = false;
+    LOGO_SET_OPTS.forEach(([label, key]) => {
+        let ctrl = addCheckbox(panel, label, key === activeLogoSetKey, v => {
+            if (logoSetUpdating) return;
+            if (!v) { ctrl.set(true); return; }
+            logoSetUpdating = true;
+            LOGO_SET_OPTS.forEach(([, k]) => { if (k !== key) logoSetCbs[k].set(false); });
+            logoSetUpdating = false;
+            switchLogoSet(key);
+        });
+        logoSetCbs[key] = ctrl;
+    });
+
+    // Upload custom logo
+    let uploadRow = document.createElement('div');
+    css(uploadRow, { display: 'flex', alignItems: 'center', gap: '4px' });
+    let logoFileInput = document.createElement('input');
+    logoFileInput.type = 'file'; logoFileInput.accept = '.svg,image/svg+xml';
+    css(logoFileInput, { fontSize: '10px', flex: '1', minWidth: '0' });
+    let clearUploadBtn = document.createElement('button');
+    clearUploadBtn.textContent = '×';
+    css(clearUploadBtn, { fontSize: '11px', padding: '1px 5px', cursor: 'pointer', display: 'none' });
+    logoFileInput.addEventListener('change', () => {
+        let file = logoFileInput.files[0];
+        if (!file) return;
+        let img = new Image();
+        img.onload = () => { applyUploadedLogo(img); clearUploadBtn.style.display = 'inline'; };
+        img.src = URL.createObjectURL(file);
+    });
+    clearUploadBtn.addEventListener('click', () => {
+        clearUploadedLogo(); logoFileInput.value = ''; clearUploadBtn.style.display = 'none';
+    });
+    uploadRow.appendChild(logoFileInput);
+    uploadRow.appendChild(clearUploadBtn);
+    panel.appendChild(uploadRow);
+
+    randomLogoCtrl = addCheckbox(panel, 'randomise logo', randomLogo, v => {
+        randomLogo = v;
+        logoFrameTimer = 0;
+        _logoShuffleQueue = [];
+        if (!v) switchLogo(Math.min(RAND_LOGOS.length - 1, logoIdx));
+    });
+
+    // ── Images section ────────────────────────────────────────────────────────
+    let imagesHeading = document.createElement('div');
+    imagesHeading.textContent = 'Images';
+    css(imagesHeading, { fontWeight: 'bold', opacity: '0.7', marginTop: '2px' });
+    panel.appendChild(imagesHeading);
+
+    imagesCtrl      = addCheckbox(panel, 'show images',   showImages, v => { showImages = v; });
+    imagesSliderCtrl= addSliderRow(panel, 'images', 1, EXTRA_IMAGES_SRC.length, imgCount, 1, v => { imgCount = v; });
+
+    // ── Colours section ───────────────────────────────────────────────────────
+    let colHeading = document.createElement('div');
+    colHeading.textContent = 'Colours';
+    css(colHeading, { fontWeight: 'bold', opacity: '0.7', marginTop: '2px' });
+    panel.appendChild(colHeading);
+
+    addColorRow(panel, 'background', bgColor, v => {
+        bgColor = v;
+        if (xyzScene) {
+            xyzScene.background = new THREE.Color(bgColor);
+            if (xyzBlankMat) xyzBlankMat.color.set(bgColor);
+            if (xyzGridMat)  xyzGridMat.color.set(bgColor);
+        }
+        if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
+    });
+    addColorRow(panel, 'logo', logoColor, v => {
+        logoColor = v;
+        if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
+    });
+
+    // ── Other display options ─────────────────────────────────────────────────
     let hr1 = document.createElement('div');
     css(hr1, { borderTop: '1px solid rgba(0,0,0,0.15)', margin: '2px 0' });
     panel.appendChild(hr1);
 
-    imagesCtrl     = addCheckbox(panel, 'images',        showImages,  v => { showImages = v; });
-                     addCheckbox(panel, 'logo',           showLogo,    v => { showLogo = v; });
-                     addCheckbox(panel, 'grid lines',     showGrid,    v => { showGrid = v; });
-                     addCheckbox(panel, 'textile',        showTextile, v => { showTextile = v; });
-    outlineCtrl    = addCheckbox(panel, 'outline',        showOutline, v => { showOutline = v; });
-    randomLogoCtrl = addCheckbox(panel, 'randomise logo', randomLogo, v => {
-        randomLogo = v;
-        logoFrameTimer = 0;
-        if (!v) switchLogo(4); // revert to logo-7 when unchecked
-    });
+                     addCheckbox(panel, 'grid lines', showGrid,    v => { showGrid = v; });
+                     addCheckbox(panel, 'textile',    showTextile, v => { showTextile = v; });
+                     addCheckbox(panel, 'logo only',  logoOnly,    v => { logoOnly = v; });
 
     // ── Content cells section ─────────────────────────────────────────────────
     let hr2 = document.createElement('hr');
@@ -1366,6 +1606,21 @@ function addSliderRow(parent, label, min, max, val, step, onChange) {
             onChange(parseFloat(v));
         }
     };
+}
+
+function addColorRow(parent, label, value, onChange) {
+    let row = document.createElement('div');
+    css(row, { display: 'flex', alignItems: 'center', gap: '6px', opacity: '0.8' });
+    let lbl = document.createElement('span');
+    lbl.textContent = label;
+    css(lbl, { fontSize: '11px', flex: '1' });
+    let input = document.createElement('input');
+    input.type = 'color'; input.value = value;
+    css(input, { width: '36px', height: '22px', padding: '1px', border: 'none', cursor: 'pointer', background: 'none' });
+    input.addEventListener('input', () => onChange(input.value));
+    row.appendChild(lbl);
+    row.appendChild(input);
+    parent.appendChild(row);
 }
 
 function addCheckbox(parent, label, val, onChange) {
