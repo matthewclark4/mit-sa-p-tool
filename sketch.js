@@ -63,7 +63,8 @@ let showImages   = false;
 let showLogo     = true;
 let showGrid      = false;
 let showOutline   = false;
-let showTextile   = false;
+let showCircles   = false;
+let showVoronoi   = false;
 let logoOnly      = false; // Swarm/Grow: skip white cells, show revealed logo only
 let bgColor       = '#523333';
 let logoColor     = '#5b83fb';
@@ -87,28 +88,21 @@ let outlineEls = OUTLINE_EL_SETS[activeLogoSetKey];
 let movement = 'xy'; // 'xy' | 'xyz' | 'swarm'
 
 // autonomous swarm position
-let swarmX = null, swarmY = null;
-let swarmVX = 2.5, swarmVY = 1.8;
+let swarmPoints = [];
 let swarmTT = 0; // dedicated slow timer for swarm animation
 
 // grow (cell division) mode
 let mitosisMap = new Map();
 const MITOSIS_THRESHOLD = 150; // both w and h must exceed this (px) to trigger
 
-// walker mode — multiple drifting points that reveal the grid
-let walkers = [];
-let walkerTT = 0;
-
 // expand mode — static origin points, narrow roots shoot outward and fade behind tip
 let expanders = [];
 let expandTT  = 0;
 const EXPAND_ROOT_SPEED  = 2.2;   // px per frame tip growth
-const EXPAND_ROOT_SIGMA  = 70;    // Gaussian width of each root (px)
-const EXPAND_ROOT_TRAIL  = 120;   // frames of trail per arm (longer = fades later)
+const EXPAND_ROOT_SIGMA  = 130;   // Gaussian width of each root (px)
+const EXPAND_ROOT_TRAIL  = 180;   // frames of trail per arm (longer = fades later)
 const EXPAND_ROOT_COUNT  = 5;     // arms per expander
 const EXPAND_ROOT_CURVE  = 0.012; // max angular drift per frame (organic curvature)
-const WALKER_SIGMA  = 120; // Gaussian falloff radius (px)
-const WALKER_TRAIL  = 90;  // frames of position history per walker (~3 s at 30 fps)
 
 let xyzEl = null, xyzRenderer = null, xyzScene = null, xyzCamera = null;
 let xyzPool = [], xyzCellCount = 0, xyzImgPool = [];
@@ -188,15 +182,23 @@ function draw() {
         }
     }
 
-    if (movement === 'xyz')     { drawXYZ(); return; }
-    if (movement === 'swarm')   { drawSwarm(); return; }
-    if (movement === 'organic') { drawGrow(); return; }
-    if (movement === 'walker')  { drawWalker(); return; }
-    if (movement === 'expand')  { drawExpand(); return; }
+    if (movement === 'xyz') { drawXYZ(); return; } // xyz uses its own Three.js canvas
 
-    background(bgColor);
-    if (!logoEls[logoIdx].loaded) return;
-    splitLogoImages(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
+    // Voronoi: take over the full frame — just animated cell outlines, nothing under them
+    if (showVoronoi) {
+        background(bgColor);
+        drawVoronoiGrid();
+        return;
+    }
+
+    if      (movement === 'swarm')   drawSwarm();
+    else if (movement === 'organic') drawGrow();
+    else if (movement === 'expand')  drawExpand();
+    else {
+        background(bgColor);
+        if (logoEls[logoIdx].loaded)
+            splitLogoImages(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
+    }
 }
 
 // ── colour helpers ────────────────────────────────────────────────────────────
@@ -309,94 +311,141 @@ function drawRegion(x, y, w, h, ix, iy, iw, ih) {
     ctx.restore();
 }
 
-// ── textile — organic polygon shapes ──────────────────────────────────────────
+// ── Voronoi grid overlay ──────────────────────────────────────────────────────
 
-// Build a smooth irregular polygon path into ctx that fits within (x,y,w,h).
-// 8 perimeter points (corners + edge mids) are jitter-displaced per nodeId,
-// then connected with midpoint-quadratic beziers for a natural rounded feel.
-function buildOrganicPath(ctx, x, y, w, h, nodeId) {
-    let m = Math.max(3, Math.min(Math.min(w, h) * 0.06, 10));
-    let x1 = x + m, y1 = y + m, x2 = x + w - m, y2 = y + h - m;
-
-    if (x2 - x1 < 6 || y2 - y1 < 6) {
-        // Cell too small for polygon — draw a small ellipse instead
-        ctx.beginPath();
-        ctx.ellipse(x + w * 0.5, y + h * 0.5,
-                    Math.max(2, (x2 - x1) * 0.5), Math.max(2, (y2 - y1) * 0.5),
-                    0, 0, Math.PI * 2);
-        ctx.closePath();
-        return true;
+// Walk the same recursive split as splitLogoImages and collect each leaf cell's
+// centre as a Voronoi seed, along with its logo region and cell bounds so the
+// content can be drawn correctly inside each polygon.
+function collectVoronoiSeeds(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
+    randomSeed(nodeId + floor(ran * 100));
+    let { amp, stopP } = LOGO;
+    if ((random() < stopP && n > 3) || n > maxDepth) {
+        return [{ x: x + w/2, y: y + h/2, cx: x, cy: y, cw: w, ch: h, ix, iy, iw, ih, nodeId }];
     }
-
-    let mx = (x1 + x2) * 0.5, my = (y1 + y2) * 0.5;
-    randomSeed(nodeId * 1337 + 42);
-    let jit = Math.min(x2 - x1, y2 - y1) * 0.15;
-
-    let pts = [
-        [x1, y1], [mx, y1], [x2, y1],
-        [x2, my],
-        [x2, y2], [mx, y2], [x1, y2],
-        [x1, my],
-    ].map(([px, py]) => [
-        px + (random() - 0.5) * 2 * jit,
-        py + (random() - 0.5) * 2 * jit,
-    ]);
-
-    let n = pts.length;
-    // Midpoint quadratic bezier: smooth closed polygon through jittered points
-    ctx.beginPath();
-    ctx.moveTo((pts[0][0] + pts[n - 1][0]) * 0.5, (pts[0][1] + pts[n - 1][1]) * 0.5);
-    for (let i = 0; i < n; i++) {
-        let nxt = pts[(i + 1) % n];
-        ctx.quadraticCurveTo(pts[i][0], pts[i][1],
-                             (pts[i][0] + nxt[0]) * 0.5, (pts[i][1] + nxt[1]) * 0.5);
+    let crx = 0.5 + amp * Math.sin(tt * (0.01 + n * 0.01) + n * 50);
+    crx = Math.max(Math.min(crx, 1 - minRatio), minRatio);
+    let cry = 0.5 + amp * Math.cos(tt * (0.01 + n * 0.01) + n * 9930);
+    cry = Math.max(Math.min(cry, 1 - minRatio), minRatio);
+    let ww = w * crx, ww2 = w * (1 - crx);
+    let hh = h * cry, hh2 = h * (1 - cry);
+    let iww = iw * 0.5, iww2 = iw * 0.5;
+    let ihh = ih * 0.5, ihh2 = ih * 0.5;
+    if (n <= 1) {
+        return [
+            ...collectVoronoiSeeds(x,    y,    ww,  hh,  ix,     iy,     iww,  ihh,  n+1, nodeId*4+0),
+            ...collectVoronoiSeeds(x+ww, y,    ww2, hh,  ix+iww, iy,     iww2, ihh,  n+1, nodeId*4+1),
+            ...collectVoronoiSeeds(x,    y+hh, ww,  hh2, ix,     iy+ihh, iww,  ihh2, n+1, nodeId*4+2),
+            ...collectVoronoiSeeds(x+ww, y+hh, ww2, hh2, ix+iww, iy+ihh, iww2, ihh2, n+1, nodeId*4+3),
+        ];
+    } else if (nodeId % 2 == 0) {
+        return [
+            ...collectVoronoiSeeds(x,    y, ww,  h, ix,     iy, iww,  ih, n+1, nodeId*2+0),
+            ...collectVoronoiSeeds(x+ww, y, ww2, h, ix+iww, iy, iww2, ih, n+1, nodeId*2+1),
+        ];
+    } else {
+        return [
+            ...collectVoronoiSeeds(x, y,    w, hh,  ix, iy,     iw, ihh,  n+1, nodeId*2+0),
+            ...collectVoronoiSeeds(x, y+hh, w, hh2, ix, iy+ihh, iw, ihh2, n+1, nodeId*2+1),
+        ];
     }
-    ctx.closePath();
-    return true;
 }
 
-// Draw a textile cell: organic polygon clipped fill + black stroke outline.
-// Content priority: images → logo → white fill.
-function drawTextileCell(x, y, w, h, ix, iy, iw, ih, nodeId) {
-    let ctx = drawingContext;
-    ctx.save();
-    if (!buildOrganicPath(ctx, x, y, w, h, nodeId)) { ctx.restore(); return; }
-
-    // Fill, clipped to organic shape
-    ctx.save();
-    ctx.clip();
-    randomSeed(nodeId * 17 + 3331);
-    let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
-    if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
-        let img = pool[floor(random() * pool.length)];
-        let ir = img.naturalWidth / img.naturalHeight, cr = w / h;
-        let dw, dh, dx, dy;
-        if (ir > cr) { dh = h; dw = h * ir; dx = x - (dw - w) * 0.5; dy = y; }
-        else          { dw = w; dh = w / ir; dx = x; dy = y - (dh - h) * 0.5; }
-        ctx.drawImage(img, dx, dy, dw, dh);
-    } else if (showLogo) {
-        let scaleX = w / iw, scaleY = h / ih;
-        if (_uploadedLogoOrigEl && _uploadedIsRaster) {
-            // PNG/JPG upload: draw as-is, no colour transformation
-            ctx.drawImage(logoEls[logoIdx].el, x - ix * scaleX, y - iy * scaleY, LOGO.w * scaleX, LOGO.h * scaleY);
-        } else if (_uploadedLogoOrigEl) {
-            let lc = getLogoCanvas();
-            if (lc) ctx.drawImage(lc, x - ix * scaleX, y - iy * scaleY, LOGO.w * scaleX, LOGO.h * scaleY);
-            else { ctx.fillStyle = bgColor; ctx.fill(); }
-        } else if (logoEls[logoIdx] && logoEls[logoIdx].loaded) {
-            ensureLogoFilter();
-            ctx.filter = 'url(#lcf)';
-            ctx.drawImage(logoEls[logoIdx].el, x - ix * scaleX, y - iy * scaleY, LOGO.w * scaleX, LOGO.h * scaleY);
-            ctx.filter = 'none';
-        } else { ctx.fillStyle = bgColor; ctx.fill(); }
-    } else {
-        ctx.fillStyle = bgColor; ctx.fill();
+function _clipPolyHalfPlane(poly, dx, dy, c) {
+    let out = [];
+    for (let i = 0; i < poly.length; i++) {
+        let a = poly[i], b = poly[(i + 1) % poly.length];
+        let va = dx * a.x + dy * a.y, vb = dx * b.x + dy * b.y;
+        if (va <= c) out.push(a);
+        if ((va <= c) !== (vb <= c)) {
+            let t = (c - va) / (vb - va);
+            out.push({ x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) });
+        }
     }
-    ctx.restore(); // remove clip — path still live
+    return out;
+}
 
-    // Stroke on the organic outline
-    ctx.strokeStyle = logoColor; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.restore();
+function drawVoronoiGrid() {
+    if (!logoEls[logoIdx] || !logoEls[logoIdx].loaded) return;
+    let W = canvas.width, H = canvas.height;
+    let seeds = collectVoronoiSeeds(0, 0, W, H, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
+
+    // Pre-compute all Voronoi polygons
+    let cells = seeds.map((s, i) => {
+        let poly = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: H }, { x: 0, y: H }];
+        for (let j = 0; j < seeds.length; j++) {
+            if (i === j || poly.length === 0) continue;
+            let dx = seeds[j].x - s.x, dy = seeds[j].y - s.y;
+            let c  = (seeds[j].x*seeds[j].x - s.x*s.x + seeds[j].y*seeds[j].y - s.y*s.y) / 2;
+            poly = _clipPolyHalfPlane(poly, dx, dy, c);
+        }
+        return poly;
+    });
+
+    let ctx = drawingContext;
+
+    // Pass 1: fill each polygon with logo content clipped to the polygon shape
+    for (let i = 0; i < seeds.length; i++) {
+        let poly = cells[i];
+        if (poly.length < 3) continue;
+        let s = seeds[i];
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(poly[0].x, poly[0].y);
+        for (let k = 1; k < poly.length; k++) ctx.lineTo(poly[k].x, poly[k].y);
+        ctx.closePath();
+        ctx.clip();
+
+        // bgColor base (handles transparent logo areas)
+        ctx.fillStyle = bgColor;
+        ctx.fill();
+
+        // Content — same priority as drawLeafCell
+        randomSeed(s.nodeId * 17 + 3331);
+        let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
+        if (showImages && pool.length > 0 && random() < 0.35 && s.cw > 80 && s.ch > 50) {
+            let img = pool[floor(random() * pool.length)];
+            let ir = img.naturalWidth / img.naturalHeight, cr = s.cw / s.ch;
+            let sx, sy, sw, sh;
+            if (ir > cr) { sh = img.naturalHeight; sw = sh * cr; sx = (img.naturalWidth - sw) / 2; sy = 0; }
+            else         { sw = img.naturalWidth;  sh = sw / cr; sx = 0; sy = (img.naturalHeight - sh) / 2; }
+            ctx.drawImage(img, sx, sy, sw, sh, s.cx, s.cy, s.cw, s.ch);
+        } else if (showLogo) {
+            let scaleX = s.cw / s.iw, scaleY = s.ch / s.ih;
+            let lx = s.cx - s.ix * scaleX, ly = s.cy - s.iy * scaleY;
+            let lw = LOGO.w * scaleX,      lh = LOGO.h * scaleY;
+            if (_uploadedLogoOrigEl && _uploadedIsRaster) {
+                ctx.drawImage(logoEls[logoIdx].el, lx, ly, lw, lh);
+            } else if (_uploadedLogoOrigEl) {
+                let lc = getLogoCanvas();
+                if (lc) ctx.drawImage(lc, lx, ly, lw, lh);
+            } else {
+                ensureLogoFilter();
+                ctx.filter = 'url(#lcf)';
+                ctx.drawImage(logoEls[logoIdx].el, lx, ly, lw, lh);
+                ctx.filter = 'none';
+            }
+        }
+
+        ctx.restore();
+    }
+
+    // Pass 2: draw outlines only when grid lines is on
+    if (showGrid) {
+        ctx.save();
+        ctx.strokeStyle = logoColor;
+        ctx.lineWidth = 1.0;
+        for (let i = 0; i < cells.length; i++) {
+            let poly = cells[i];
+            if (poly.length < 3) continue;
+            ctx.beginPath();
+            ctx.moveTo(poly[0].x, poly[0].y);
+            for (let k = 1; k < poly.length; k++) ctx.lineTo(poly[k].x, poly[k].y);
+            ctx.closePath();
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
 }
 
 function drawImageCover(img, x, y, w, h) {
@@ -414,6 +463,65 @@ function drawImageCover(img, x, y, w, h) {
     ctx.restore();
 }
 
+// Unified leaf-cell renderer used by every mode.
+// When showCircles is on the SHAPE of each cell becomes an ellipse whose
+// dimensions match the full cell width × height — so wide cells → wide ovals,
+// tall cells → tall ovals, square cells → circles.  The existing rectangle
+// content (logo, grid lines, etc.) is drawn normally when circles are off.
+function drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId) {
+    let rx = Math.round(x), ry = Math.round(y);
+    let rw = Math.round(x + w) - rx, rh = Math.round(y + h) - ry;
+    let cx = x + w / 2, cy = y + h / 2;
+
+    if (showCircles) {
+        // Clip to a full-cell ellipse (w × h), then draw content inside.
+        // When no content is present, just show the oval outline so the grid
+        // structure is still visible.
+        let ctx = drawingContext;
+        ctx.save();
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, w / 2, h / 2, 0, 0, Math.PI * 2);
+        ctx.clip();
+
+        let drewContent = false;
+        randomSeed(nodeId * 17 + 3331);
+        let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
+        if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
+            drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
+            drewContent = true;
+        } else if (showLogo) {
+            drawRegion(x, y, w, h, ix, iy, iw, ih);
+            drewContent = true;
+        }
+
+        ctx.restore();
+
+        // Show oval outline when there's no content, or when grid/outline are on
+        if (!drewContent || showOutline || showGrid) {
+            noFill(); stroke(logoColor); strokeWeight(0.7);
+            ellipse(cx, cy, w, h);
+        }
+        return;
+    }
+
+    // ── normal rect rendering ─────────────────────────────────────────────────
+    randomSeed(nodeId * 17 + 3331);
+    let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
+    if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
+        drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
+    } else if (showGrid) {
+        fill(bgColor); noStroke(); rect(rx, ry, rw, rh);
+    } else if (showLogo) {
+        drawRegion(x, y, w, h, ix, iy, iw, ih);
+    } else {
+        fill(bgColor); noStroke(); rect(rx, ry, rw, rh);
+    }
+    if (showGrid) {
+        noFill(); stroke(logoColor); strokeWeight(0.5); rect(rx, ry, rw, rh);
+    }
+    if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
+}
+
 function splitLogoImages(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
     randomSeed(nodeId + floor(ran * 100));
     let { amp, stopP } = LOGO;
@@ -425,22 +533,7 @@ function splitLogoImages(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
             textBlocks[_textClaimedIdx].bounds = { x, y, w, h }; _textClaimedIdx++;
             drawTextBgCell(x, y, w, h); return;
         }
-        if (showTextile) {
-            drawTextileCell(x, y, w, h, ix, iy, iw, ih, nodeId);
-        } else {
-            randomSeed(nodeId * 17 + 3331);
-            let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
-            if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
-                drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
-            } else if (showGrid) {
-                fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
-            } else if (showLogo) {
-                drawRegion(x, y, w, h, ix, iy, iw, ih);
-            } else {
-                fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
-            }
-            if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
-        }
+        drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId);
         return;
     }
     let crx = 0.5 + amp * Math.sin(tt * (0.01 + n * 0.01) + n * 50);
@@ -467,23 +560,31 @@ function splitLogoImages(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
 
 // ── swarm mode ────────────────────────────────────────────────────────────────
 
+function initSwarmPoints() {
+    // Spread 3 starting positions across the canvas so letters are visible immediately
+    swarmPoints = [
+        { x: canvas.width * 0.25, y: canvas.height * 0.5,  vx: 2.5,  vy: -1.8 },
+        { x: canvas.width * 0.5,  y: canvas.height * 0.35, vx: -2.0, vy:  2.2 },
+        { x: canvas.width * 0.75, y: canvas.height * 0.6,  vx: 1.5,  vy: -2.5 },
+    ];
+}
+
 function updateSwarm() {
-    if (swarmX === null) { swarmX = canvas.width / 2; swarmY = canvas.height / 2; }
-    // Small random nudge + damping for smooth wandering
-    swarmVX += (Math.random() - 0.5) * 0.7;
-    swarmVY += (Math.random() - 0.5) * 0.7;
-    swarmVX *= 0.95;
-    swarmVY *= 0.95;
-    let spd = Math.sqrt(swarmVX * swarmVX + swarmVY * swarmVY);
-    let minSpd = 3.0, maxSpd = 7.0;
-    if (spd > maxSpd) { swarmVX *= maxSpd / spd; swarmVY *= maxSpd / spd; }
-    if (spd < minSpd) { swarmVX *= minSpd / spd; swarmVY *= minSpd / spd; }
-    swarmX += swarmVX;
-    swarmY += swarmVY;
-    if (swarmX < 0)             { swarmX = 0;             swarmVX =  Math.abs(swarmVX); }
-    if (swarmX > canvas.width)  { swarmX = canvas.width;  swarmVX = -Math.abs(swarmVX); }
-    if (swarmY < 0)             { swarmY = 0;             swarmVY =  Math.abs(swarmVY); }
-    if (swarmY > canvas.height) { swarmY = canvas.height; swarmVY = -Math.abs(swarmVY); }
+    if (swarmPoints.length === 0) initSwarmPoints();
+    const minSpd = 3.0, maxSpd = 7.0;
+    for (let p of swarmPoints) {
+        p.vx += (Math.random() - 0.5) * 0.7;
+        p.vy += (Math.random() - 0.5) * 0.7;
+        p.vx *= 0.95; p.vy *= 0.95;
+        let spd = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+        if (spd > maxSpd) { p.vx *= maxSpd / spd; p.vy *= maxSpd / spd; }
+        if (spd < minSpd) { p.vx *= minSpd / spd; p.vy *= minSpd / spd; }
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < 0)            { p.x = 0;            p.vx =  Math.abs(p.vx); }
+        if (p.x > canvas.width) { p.x = canvas.width; p.vx = -Math.abs(p.vx); }
+        if (p.y < 0)            { p.y = 0;            p.vy =  Math.abs(p.vy); }
+        if (p.y > canvas.height){ p.y = canvas.height;p.vy = -Math.abs(p.vy); }
+    }
 }
 
 function drawSwarm() {
@@ -501,12 +602,15 @@ function splitLogoMouse(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
     let cry = 0.5 + amp * Math.cos(swarmTT * 0.012 + nodeId * 1.3);
     cry = Math.max(Math.min(cry, 1 - minRatio), minRatio);
 
-    // Closest point on this cell to the swarm — eliminates dead zones at split lines
-    let nearX = Math.max(x, Math.min(swarmX, x + w));
-    let nearY = Math.max(y, Math.min(swarmY, y + h));
-    let dist = Math.sqrt((nearX - swarmX) ** 2 + (nearY - swarmY) ** 2);
-    let sigma = 300;
-    let influence = Math.exp(-(dist / sigma) * (dist / sigma));
+    // Closest point on this cell to each swarm circle — take the strongest influence
+    const sigma = 300, sig2 = sigma * sigma;
+    let influence = 0;
+    for (let p of swarmPoints) {
+        let nearX = Math.max(x, Math.min(p.x, x + w));
+        let nearY = Math.max(y, Math.min(p.y, y + h));
+        let d2 = (nearX - p.x) ** 2 + (nearY - p.y) ** 2;
+        influence = Math.max(influence, Math.exp(-d2 / sig2));
+    }
     let localDepth = Math.max(1, Math.round(influence * maxDepth));
 
     if (n >= localDepth) {
@@ -517,22 +621,7 @@ function splitLogoMouse(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
             textBlocks[_textClaimedIdx].bounds = { x, y, w, h }; _textClaimedIdx++;
             drawTextBgCell(x, y, w, h); return;
         }
-        if (showTextile) {
-            drawTextileCell(x, y, w, h, ix, iy, iw, ih, nodeId);
-        } else {
-            randomSeed(nodeId * 17 + 3331);
-            let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
-            if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
-                drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
-            } else if (showGrid) {
-                fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
-            } else if (showLogo) {
-                drawRegion(x, y, w, h, ix, iy, iw, ih);
-            } else {
-                fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
-            }
-            if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
-        }
+        drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId);
         return;
     }
 
@@ -609,29 +698,14 @@ function renderLeafGrow(x, y, w, h, ix, iy, iw, ih, nodeId) {
     }
 
     // Normal render this frame
-    if (showTextile) {
-        drawTextileCell(x, y, w, h, ix, iy, iw, ih, nodeId);
-    } else {
-        randomSeed(nodeId * 17 + 3331);
-        let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
-        if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
-            drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
-        } else if (showGrid) {
-            fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
-        } else if (showLogo) {
-            drawRegion(x, y, w, h, ix, iy, iw, ih);
-        } else {
-            fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
-        }
-        // Arm mitosis once the cell is large enough in both dimensions
-        if (w > MITOSIS_THRESHOLD && h > MITOSIS_THRESHOLD) {
-            mitosisMap.set(nodeId, {
-                scale: 1.0,
-                rate:  0.003 + Math.random() * 0.003,
-                children: null,
-                splitDir: w >= h ? 'h' : 'v'
-            });
-        }
+    drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId);
+    if (w > MITOSIS_THRESHOLD && h > MITOSIS_THRESHOLD) {
+        mitosisMap.set(nodeId, {
+            scale: 1.0,
+            rate:  0.003 + Math.random() * 0.003,
+            children: null,
+            splitDir: w >= h ? 'h' : 'v'
+        });
     }
 }
 
@@ -670,146 +744,6 @@ function renderZoomedContent(x, y, w, h, ix, iy, iw, ih, s) {
     let vix = ix + (iw - viw) / 2;
     let viy = iy + (ih - vih) / 2;
     drawRegion(x, y, w, h, vix, viy, viw, vih);
-}
-
-// ── walker mode ───────────────────────────────────────────────────────────────
-
-function initWalkers() {
-    walkers = [];
-    const COUNT = 10;
-    for (let i = 0; i < COUNT; i++) {
-        // Spread across a grid of starting zones so they don't all cluster
-        let col = i % 4, row = Math.floor(i / 4);
-        walkers.push({
-            x:  canvas.width  * ((col + 0.3 + Math.random() * 0.4) / 4),
-            y:  canvas.height * ((row + 0.3 + Math.random() * 0.4) / 3),
-            vx: (Math.random() - 0.5) * 3,
-            vy: (Math.random() - 0.5) * 3,
-            trail: [],
-        });
-    }
-}
-
-function updateWalkers() {
-    const MIN_SPD = 0.8, MAX_SPD = 2.0;
-    for (let w of walkers) {
-        // Gentle random drift (droplet-on-leaf feel)
-        w.vx += (Math.random() - 0.5) * 0.25;
-        w.vy += (Math.random() - 0.5) * 0.25;
-        w.vx *= 0.97;
-        w.vy *= 0.97;
-        let spd = Math.sqrt(w.vx * w.vx + w.vy * w.vy);
-        if (spd > MAX_SPD) { w.vx *= MAX_SPD / spd; w.vy *= MAX_SPD / spd; }
-        if (spd < MIN_SPD) { w.vx *= MIN_SPD / spd; w.vy *= MIN_SPD / spd; }
-        w.x += w.vx;
-        w.y += w.vy;
-        if (w.x < 0)             { w.x = 0;             w.vx =  Math.abs(w.vx); }
-        if (w.x > canvas.width)  { w.x = canvas.width;  w.vx = -Math.abs(w.vx); }
-        if (w.y < 0)             { w.y = 0;             w.vy =  Math.abs(w.vy); }
-        if (w.y > canvas.height) { w.y = canvas.height; w.vy = -Math.abs(w.vy); }
-        w.trail.push({ x: w.x, y: w.y });
-        if (w.trail.length > WALKER_TRAIL) w.trail.shift();
-    }
-}
-
-// Gaussian influence at nearest point of a cell rect, accumulated across each walker's trail.
-// Older trail positions get lower weight so the trail fades behind the walker.
-function walkerInfluence(x, y, w, h) {
-    let maxInf = 0;
-    let sig2 = WALKER_SIGMA * WALKER_SIGMA;
-    for (let wk of walkers) {
-        let n = wk.trail.length;
-        for (let t = 0; t < n; t++) {
-            let weight = Math.sqrt((t + 1) / n); // 0 (oldest) → 1 (newest)
-            let pos = wk.trail[t];
-            let nearX = Math.max(x, Math.min(pos.x, x + w));
-            let nearY = Math.max(y, Math.min(pos.y, y + h));
-            let d2 = (nearX - pos.x) ** 2 + (nearY - pos.y) ** 2;
-            let inf = weight * Math.exp(-d2 / sig2);
-            if (inf > maxInf) maxInf = inf;
-        }
-    }
-    return maxInf;
-}
-
-function drawWalker() {
-    if (!paused) walkerTT += 0.5;
-    if (walkers.length === 0) initWalkers();
-    if (!paused) updateWalkers();
-    background(bgColor);
-    if (!logoEls[logoIdx].loaded) return;
-    splitLogoWalker(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
-}
-
-// Same grid recursion as grow mode (slow ambient) — leaf decides visibility per walker zone
-function splitLogoWalker(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
-    randomSeed(nodeId + floor(ran * 100));
-    let { amp, stopP } = LOGO;
-    if ((random() < stopP && n > 3) || n > maxDepth) {
-        renderLeafWalker(x, y, w, h, ix, iy, iw, ih, nodeId);
-        return;
-    }
-    let crx = 0.5 + amp * Math.sin(walkerTT * (0.003 + n * 0.003) + n * 50);
-    crx = Math.max(Math.min(crx, 1 - minRatio), minRatio);
-    let cry = 0.5 + amp * Math.cos(walkerTT * (0.003 + n * 0.003) + n * 9930);
-    cry = Math.max(Math.min(cry, 1 - minRatio), minRatio);
-    let ww = w * crx,   ww2 = w * (1 - crx);
-    let hh = h * cry,   hh2 = h * (1 - cry);
-    let iww = iw * 0.5, iww2 = iw * 0.5;
-    let ihh = ih * 0.5, ihh2 = ih * 0.5;
-    if (n <= 1) {
-        splitLogoWalker(x,    y,    ww,  hh,  ix,     iy,     iww,  ihh,  n+1, nodeId*4+0);
-        splitLogoWalker(x+ww, y,    ww2, hh,  ix+iww, iy,     iww2, ihh,  n+1, nodeId*4+1);
-        splitLogoWalker(x,    y+hh, ww,  hh2, ix,     iy+ihh, iww,  ihh2, n+1, nodeId*4+2);
-        splitLogoWalker(x+ww, y+hh, ww2, hh2, ix+iww, iy+ihh, iww2, ihh2, n+1, nodeId*4+3);
-    } else if (nodeId % 2 == 0) {
-        splitLogoWalker(x,    y, ww,  h, ix,     iy, iww,  ih, n+1, nodeId*2+0);
-        splitLogoWalker(x+ww, y, ww2, h, ix+iww, iy, iww2, ih, n+1, nodeId*2+1);
-    } else {
-        splitLogoWalker(x, y,    w, hh,  ix, iy,     iw, ihh,  n+1, nodeId*2+0);
-        splitLogoWalker(x, y+hh, w, hh2, ix, iy+ihh, iw, ihh2, n+1, nodeId*2+1);
-    }
-}
-
-function renderLeafWalker(x, y, w, h, ix, iy, iw, ih, nodeId) {
-    // Content cells always visible — check before walker influence gating
-    if (showHeading && !_headingClaimed && headingImg && w >= HEADING_MIN_W && h >= HEADING_MIN_H) {
-        _headingClaimed = true; drawHeadingCell(x, y, w, h); return;
-    }
-    if (_textClaimedIdx < textBlocks.length && textBlocks[_textClaimedIdx].text && w >= TEXT_MIN_W && h >= TEXT_MIN_H) {
-        textBlocks[_textClaimedIdx].bounds = { x, y, w, h }; _textClaimedIdx++;
-        drawTextBgCell(x, y, w, h); return;
-    }
-
-    let inf = walkerInfluence(x, y, w, h);
-
-    if (inf < 0.05) {
-        if (!logoOnly) { fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y)); }
-        return;
-    }
-
-    if (inf < 0.30) {
-        if (!logoOnly) { fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y)); }
-        return;
-    }
-
-    // Inside walker — full content reveal
-    if (showTextile) {
-        drawTextileCell(x, y, w, h, ix, iy, iw, ih, nodeId);
-        return;
-    }
-    randomSeed(nodeId * 17 + 3331);
-    let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
-    if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
-        drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
-    } else if (showGrid) {
-        fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
-    } else if (showLogo) {
-        drawRegion(x, y, w, h, ix, iy, iw, ih);
-    } else {
-        fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
-    }
-    if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
 }
 
 // ── expand mode ───────────────────────────────────────────────────────────────
@@ -956,21 +890,7 @@ function renderLeafExpand(x, y, w, h, ix, iy, iw, ih, nodeId) {
     }
 
     // Fully inside the ring — reveal content
-    if (showTextile) {
-        drawTextileCell(x, y, w, h, ix, iy, iw, ih, nodeId); return;
-    }
-    randomSeed(nodeId * 17 + 3331);
-    let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
-    if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
-        drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
-    } else if (showGrid) {
-        fill(bgColor); stroke(logoColor); strokeWeight(0.5); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
-    } else if (showLogo) {
-        drawRegion(x, y, w, h, ix, iy, iw, ih);
-    } else {
-        fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
-    }
-    if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
+    drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId);
 }
 
 // ── x/y/z Three.js depth mode ─────────────────────────────────────────────────
@@ -1153,7 +1073,7 @@ function setUV(geo, u0, u1, v0, v1) {
 function switchLogo(idx) {
     logoIdx = idx;
     LOGO = RAND_LOGOS[idx];
-    swarmX = null;
+    swarmPoints = [];
     if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
 }
 
@@ -1165,7 +1085,7 @@ function switchLogoSet(key) {
     outlineEls = OUTLINE_EL_SETS[key];
     logoIdx    = Math.min(logoIdx, Math.max(0, RAND_LOGOS.length - 1));
     LOGO       = RAND_LOGOS[logoIdx] || RAND_LOGOS[0];
-    swarmX     = null;
+    swarmPoints = [];
     _logoShuffleQueue = [];
     if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
     else xyzReady = false;
@@ -1184,7 +1104,7 @@ function applyUploadedLogo(img) {
     let w = img.naturalWidth  || LOGO.w;
     let h = img.naturalHeight || LOGO.h;
     LOGO = { ...LOGO, w, h, contentH: h };
-    swarmX = null;
+    swarmPoints = [];
     if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
     else xyzReady = false;
 }
@@ -1197,7 +1117,7 @@ function clearUploadedLogo() {
     _uploadedOutlineOrigEl = null;
     _uploadedIsRaster      = false;
     LOGO = RAND_LOGOS[logoIdx] || RAND_LOGOS[0];
-    swarmX = null;
+    swarmPoints = [];
     if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
     else xyzReady = false;
 }
@@ -1323,7 +1243,7 @@ function buildUI() {
 
     // Two button groups; all buttons share one active-state tracker so
     // clicking either group deselects the other.
-    let slicesCtrl, cellCtrl, imagesSliderCtrl, imagesCtrl, randomLogoCtrl, camHCtrl, camVCtrl;
+    let slicesCtrl, cellCtrl, imagesSliderCtrl, imagesCtrl, randomLogoCtrl, camHCtrl, camVCtrl, gridCtrl, logoOnlyCtrl;
     let allModeButtons = []; // filled below, used to sync highlight across both groups
 
     function makeModeBtn(label, modeKey) {
@@ -1358,23 +1278,22 @@ function buildUI() {
                     imagesCtrl.set(false); showOutline = false; randomLogoCtrl.set(false);
                 }
                 if (movement === 'swarm') {
-                    swarmX = null;
-                    slicesCtrl.set(6);  cellCtrl.set(0.25); imagesSliderCtrl.set(6);
+                    swarmPoints = [];
+                    slicesCtrl.set(8);  cellCtrl.set(0.25); imagesSliderCtrl.set(6);
                     imagesCtrl.set(false); showOutline = false; randomLogoCtrl.set(false);
+                    gridCtrl.set(false);
                 }
                 if (movement === 'organic') {
                     mitosisMap.clear();
-                    slicesCtrl.set(5);  cellCtrl.set(0.20); imagesSliderCtrl.set(5);
+                    slicesCtrl.set(8);  cellCtrl.set(0.20); imagesSliderCtrl.set(5);
                     imagesCtrl.set(false); showOutline = false; randomLogoCtrl.set(false);
-                }
-                if (movement === 'walker')  {
-                    walkers = []; walkerTT = 0;
-                    slicesCtrl.set(10); cellCtrl.set(0.40);
                 }
                 if (movement === 'expand')  {
                     expanders = []; expandTT = 0;
-                    slicesCtrl.set(10); cellCtrl.set(0.40); showOutline = false;
+                    slicesCtrl.set(8); cellCtrl.set(0.40); showOutline = false;
+                    gridCtrl.set(false); logoOnlyCtrl.set(true);
                 }
+
             }
         });
         return btn;
@@ -1394,7 +1313,7 @@ function buildUI() {
 
     let cellRow = document.createElement('div');
     css(cellRow, { display: 'flex', flexWrap: 'wrap', gap: '4px' });
-    [['x/y/z', 'xyz'], ['Divide', 'organic'], ['Swarm', 'walker'], ['Grow', 'expand']].forEach(([label, key]) => cellRow.appendChild(makeModeBtn(label, key)));
+    [['x/y/z', 'xyz'], ['Divide', 'organic'], ['Grow', 'expand']].forEach(([label, key]) => cellRow.appendChild(makeModeBtn(label, key)));
     panel.appendChild(cellRow);
 
     // Camera orbit sliders — only visible in xyz mode
@@ -1501,9 +1420,10 @@ function buildUI() {
     css(hr1, { borderTop: '1px solid rgba(0,0,0,0.15)', margin: '2px 0' });
     panel.appendChild(hr1);
 
-                     addCheckbox(panel, 'grid lines', showGrid,    v => { showGrid = v; });
-                     addCheckbox(panel, 'textile',    showTextile, v => { showTextile = v; });
-                     addCheckbox(panel, 'logo only',  logoOnly,    v => { logoOnly = v; });
+    gridCtrl =           addCheckbox(panel, 'grid lines', showGrid,    v => { showGrid = v; });
+                     addCheckbox(panel, 'circles',    showCircles, v => { showCircles = v; });
+                     addCheckbox(panel, 'voronoi',    showVoronoi, v => { showVoronoi = v; });
+    logoOnlyCtrl =   addCheckbox(panel, 'logo only',  logoOnly,    v => { logoOnly = v; });
 
     // ── Content cells section ─────────────────────────────────────────────────
     let hr2 = document.createElement('hr');
@@ -1599,7 +1519,6 @@ function buildUI() {
         tt    = v * 3;
         ttTgt = tt;
         swarmTT  = v * 3.6;
-        walkerTT = v * 0.5;
         expandTT = v * 0.5;
     });
 
