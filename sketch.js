@@ -205,21 +205,53 @@ function hexToRgb(hex) {
     return { r: parseInt(hex.slice(1,3),16), g: parseInt(hex.slice(3,5),16), b: parseInt(hex.slice(5,7),16) };
 }
 
+// SVG filter-based logo recolouring — avoids pre-rasterising to a canvas so the
+// browser rasterises the SVG fresh at whatever scale each cell needs (no upscale blur).
+// The filter maps: SVG coverage → logoColor, transparent → bgColor.
+let _logoFilterEl = null, _logoFilterKey = '';
+function ensureLogoFilter() {
+    let key = logoColor + '|' + bgColor;
+    if (_logoFilterKey === key) return;
+    if (!_logoFilterEl) {
+        _logoFilterEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        _logoFilterEl.setAttribute('width', '0');
+        _logoFilterEl.setAttribute('height', '0');
+        Object.assign(_logoFilterEl.style, { position: 'absolute', overflow: 'hidden', left: '0', top: '0', pointerEvents: 'none' });
+        document.body.appendChild(_logoFilterEl);
+    }
+    // feFlood(logoColor) masked to SVG alpha → logo shape in logoColor
+    // feMerge: bgColor underneath, logo shape on top → correct blend at anti-aliased edges
+    _logoFilterEl.innerHTML = `<defs>
+      <filter id="lcf" color-interpolation-filters="sRGB" x="0%" y="0%" width="100%" height="100%">
+        <feFlood flood-color="${logoColor}" result="lc"/>
+        <feComposite in="lc" in2="SourceAlpha" operator="in" result="logo"/>
+        <feFlood flood-color="${bgColor}" result="bc"/>
+        <feMerge><feMergeNode in="bc"/><feMergeNode in="logo"/></feMerge>
+      </filter>
+    </defs>`;
+    _logoFilterKey = key;
+}
+
 let _logoCache = null, _logoCacheKey = '';
 function getLogoCanvas() {
     let uploadKey = _uploadedLogoOrigEl ? 'u' : 'n';
     // Physical canvas dimensions — the SVG must be rasterized at this resolution
     // so drawImage renders it 1:1 in physical pixels with no upscale blur.
     let phW = drawingContext.canvas.width;
-    let phH = drawingContext.canvas.height;
-    let key = `${logoIdx}_${activeLogoSetKey}_${uploadKey}_${logoColor}_${bgColor}_${phW}_${phH}`;
+    let pd  = phW / canvas.width; // pixel density (physical px per CSS px)
+    // drawRegion draws the logo at these CSS dimensions (same formula it uses):
+    //   width:  Math.round(LOGO.w * scaleX) = canvas.width  (always exact integer)
+    //   height: Math.round(LOGO.h * scaleY) = Math.round(canvas.height * LOGO.h / LOGO.contentH)
+    // Physical destination = CSS * pd. Cache must be exactly that size or the
+    // browser will scale it by 1px and introduce blur.
+    let dw_css = canvas.width;
+    let dh_css = Math.round(canvas.height * LOGO.h / LOGO.contentH);
+    let tw = Math.round(dw_css * pd); // = phW
+    let th = Math.max(1, Math.round(dh_css * pd));
+    let key = `${logoIdx}_${activeLogoSetKey}_${uploadKey}_${logoColor}_${bgColor}_${tw}_${th}`;
     if (_logoCacheKey === key && _logoCache) return _logoCache;
     if (!logoEls[logoIdx] || !logoEls[logoIdx].loaded) return null;
     let el = logoEls[logoIdx].el;
-    // Match the physical destination size: logo fills phW wide,
-    // and LOGO.h/LOGO.contentH tells how much taller it extends beyond the canvas.
-    let tw = phW;
-    let th = Math.max(1, Math.round(phH * LOGO.h / LOGO.contentH));
     let tc = document.createElement('canvas');
     tc.width = tw; tc.height = th;
     let tctx = tc.getContext('2d');
@@ -248,8 +280,7 @@ function getLogoCanvas() {
 
 function drawRegion(x, y, w, h, ix, iy, iw, ih) {
     if (w < 0.5 || h < 0.5 || iw < 0.01 || ih < 0.01) return;
-    let lc = getLogoCanvas();
-    if (!lc) return;
+    if (!logoEls[logoIdx] || !logoEls[logoIdx].loaded) return;
     // Snap to integers so adjacent cell clips share an exact pixel boundary with no anti-aliased seam
     let rx = Math.round(x), ry = Math.round(y);
     let rw = Math.round(x + w) - rx, rh = Math.round(y + h) - ry;
@@ -258,8 +289,23 @@ function drawRegion(x, y, w, h, ix, iy, iw, ih) {
     let ctx = drawingContext;
     ctx.save();
     ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip();
-    ctx.drawImage(lc, Math.round(x - ix * scaleX), Math.round(y - iy * scaleY),
-                  Math.round(LOGO.w * scaleX), Math.round(LOGO.h * scaleY));
+    if (_uploadedLogoOrigEl && _uploadedIsRaster) {
+        // PNG/JPG upload: draw as-is, no colour transformation
+        ctx.drawImage(logoEls[logoIdx].el, Math.round(x - ix * scaleX), Math.round(y - iy * scaleY),
+                      Math.round(LOGO.w * scaleX), Math.round(LOGO.h * scaleY));
+    } else if (_uploadedLogoOrigEl) {
+        // SVG upload: use pre-rendered canvas for colour mapping
+        let lc = getLogoCanvas();
+        if (lc) ctx.drawImage(lc, Math.round(x - ix * scaleX), Math.round(y - iy * scaleY),
+                              Math.round(LOGO.w * scaleX), Math.round(LOGO.h * scaleY));
+    } else {
+        // Built-in SVG: draw directly so the browser rasterises at the exact destination scale — no upscale blur.
+        ensureLogoFilter();
+        ctx.filter = 'url(#lcf)';
+        ctx.drawImage(logoEls[logoIdx].el,
+                      x - ix * scaleX, y - iy * scaleY,
+                      LOGO.w * scaleX, LOGO.h * scaleY);
+    }
     ctx.restore();
 }
 
@@ -329,13 +375,20 @@ function drawTextileCell(x, y, w, h, ix, iy, iw, ih, nodeId) {
         else          { dw = w; dh = w / ir; dx = x; dy = y - (dh - h) * 0.5; }
         ctx.drawImage(img, dx, dy, dw, dh);
     } else if (showLogo) {
-        let lc = getLogoCanvas();
-        if (lc) {
-            let scaleX = w / iw, scaleY = h / ih;
-            ctx.drawImage(lc, x - ix * scaleX, y - iy * scaleY, LOGO.w * scaleX, LOGO.h * scaleY);
-        } else {
-            ctx.fillStyle = bgColor; ctx.fill();
-        }
+        let scaleX = w / iw, scaleY = h / ih;
+        if (_uploadedLogoOrigEl && _uploadedIsRaster) {
+            // PNG/JPG upload: draw as-is, no colour transformation
+            ctx.drawImage(logoEls[logoIdx].el, x - ix * scaleX, y - iy * scaleY, LOGO.w * scaleX, LOGO.h * scaleY);
+        } else if (_uploadedLogoOrigEl) {
+            let lc = getLogoCanvas();
+            if (lc) ctx.drawImage(lc, x - ix * scaleX, y - iy * scaleY, LOGO.w * scaleX, LOGO.h * scaleY);
+            else { ctx.fillStyle = bgColor; ctx.fill(); }
+        } else if (logoEls[logoIdx] && logoEls[logoIdx].loaded) {
+            ensureLogoFilter();
+            ctx.filter = 'url(#lcf)';
+            ctx.drawImage(logoEls[logoIdx].el, x - ix * scaleX, y - iy * scaleY, LOGO.w * scaleX, LOGO.h * scaleY);
+            ctx.filter = 'none';
+        } else { ctx.fillStyle = bgColor; ctx.fill(); }
     } else {
         ctx.fillStyle = bgColor; ctx.fill();
     }
@@ -1121,6 +1174,7 @@ function switchLogoSet(key) {
 // ── custom uploaded logo (overrides active set) ───────────────────────────────
 let _uploadedLogoOrigEl    = null;
 let _uploadedOutlineOrigEl = null;
+let _uploadedIsRaster      = false; // true for PNG/JPG uploads — drawn as-is, no colour mapping
 
 function applyUploadedLogo(img) {
     _uploadedLogoOrigEl    = logoEls[logoIdx];
@@ -1141,6 +1195,7 @@ function clearUploadedLogo() {
     outlineEls[logoIdx] = _uploadedOutlineOrigEl;
     _uploadedLogoOrigEl    = null;
     _uploadedOutlineOrigEl = null;
+    _uploadedIsRaster      = false;
     LOGO = RAND_LOGOS[logoIdx] || RAND_LOGOS[0];
     swarmX = null;
     if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
@@ -1381,7 +1436,7 @@ function buildUI() {
     let uploadRow = document.createElement('div');
     css(uploadRow, { display: 'flex', alignItems: 'center', gap: '4px' });
     let logoFileInput = document.createElement('input');
-    logoFileInput.type = 'file'; logoFileInput.accept = '.svg,image/svg+xml';
+    logoFileInput.type = 'file'; logoFileInput.accept = '.svg,.png,.jpg,.jpeg,image/svg+xml,image/png,image/jpeg';
     css(logoFileInput, { fontSize: '10px', flex: '1', minWidth: '0' });
     let clearUploadBtn = document.createElement('button');
     clearUploadBtn.textContent = '×';
@@ -1389,8 +1444,13 @@ function buildUI() {
     logoFileInput.addEventListener('change', () => {
         let file = logoFileInput.files[0];
         if (!file) return;
+        let isRaster = /\.(png|jpe?g)$/i.test(file.name) || file.type === 'image/png' || file.type === 'image/jpeg';
         let img = new Image();
-        img.onload = () => { applyUploadedLogo(img); clearUploadBtn.style.display = 'inline'; };
+        img.onload = () => {
+            _uploadedIsRaster = isRaster;
+            applyUploadedLogo(img);
+            clearUploadBtn.style.display = 'inline';
+        };
         img.src = URL.createObjectURL(file);
     });
     clearUploadBtn.addEventListener('click', () => {
