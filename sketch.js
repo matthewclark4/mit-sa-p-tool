@@ -62,6 +62,7 @@ let imgCount     = 1;
 let showImages   = false;
 let showLogo     = true;
 let showGrid      = false;
+let showLinesLogo = false;
 let showOutline   = false;
 let showCircles   = false;
 let showVoronoi   = false;
@@ -103,6 +104,7 @@ const EXPAND_ROOT_SIGMA  = 130;   // Gaussian width of each root (px)
 const EXPAND_ROOT_TRAIL  = 180;   // frames of trail per arm (longer = fades later)
 const EXPAND_ROOT_COUNT  = 5;     // arms per expander
 const EXPAND_ROOT_CURVE  = 0.012; // max angular drift per frame (organic curvature)
+
 
 let xyzEl = null, xyzRenderer = null, xyzScene = null, xyzCamera = null;
 let xyzPool = [], xyzCellCount = 0, xyzImgPool = [];
@@ -509,6 +511,9 @@ function drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId) {
     let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
     if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
         drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
+    } else if (showLinesLogo) {
+        // lines & logo: draw logo first, then overlay cell outlines below
+        drawRegion(x, y, w, h, ix, iy, iw, ih);
     } else if (showGrid) {
         fill(bgColor); noStroke(); rect(rx, ry, rw, rh);
     } else if (showLogo) {
@@ -516,7 +521,7 @@ function drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId) {
     } else {
         fill(bgColor); noStroke(); rect(rx, ry, rw, rh);
     }
-    if (showGrid) {
+    if (showGrid || showLinesLogo) {
         noFill(); stroke(logoColor); strokeWeight(0.5); rect(rx, ry, rw, rh);
     }
     if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
@@ -1276,6 +1281,7 @@ function buildUI() {
                 if (movement === 'xy') {
                     slicesCtrl.set(5);  cellCtrl.set(0.10); imagesSliderCtrl.set(14);
                     imagesCtrl.set(false); showOutline = false; randomLogoCtrl.set(false);
+                    gridCtrl.set(false);
                 }
                 if (movement === 'swarm') {
                     swarmPoints = [];
@@ -1287,13 +1293,13 @@ function buildUI() {
                     mitosisMap.clear();
                     slicesCtrl.set(8);  cellCtrl.set(0.20); imagesSliderCtrl.set(5);
                     imagesCtrl.set(false); showOutline = false; randomLogoCtrl.set(false);
+                    gridCtrl.set(false);
                 }
                 if (movement === 'expand')  {
                     expanders = []; expandTT = 0;
                     slicesCtrl.set(8); cellCtrl.set(0.40); showOutline = false;
                     gridCtrl.set(false); logoOnlyCtrl.set(true);
                 }
-
             }
         });
         return btn;
@@ -1420,7 +1426,8 @@ function buildUI() {
     css(hr1, { borderTop: '1px solid rgba(0,0,0,0.15)', margin: '2px 0' });
     panel.appendChild(hr1);
 
-    gridCtrl =           addCheckbox(panel, 'grid lines', showGrid,    v => { showGrid = v; });
+    gridCtrl =           addCheckbox(panel, 'grid lines',   showGrid,    v => { showGrid = v; });
+                     addCheckbox(panel, 'lines & logo', false, v => { showLinesLogo = v; });
                      addCheckbox(panel, 'circles',    showCircles, v => { showCircles = v; });
                      addCheckbox(panel, 'voronoi',    showVoronoi, v => { showVoronoi = v; });
     logoOnlyCtrl =   addCheckbox(panel, 'logo only',  logoOnly,    v => { logoOnly = v; });
