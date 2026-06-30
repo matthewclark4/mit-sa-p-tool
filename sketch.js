@@ -64,23 +64,33 @@ let showLogo     = true;
 let showGrid      = false;
 let showLinesLogo = false;
 let showOutline   = false;
-let showCircles   = false;
+let logoScale     = 1.0;
 let showVoronoi   = false;
 let logoOnly      = false; // Swarm/Grow: skip white cells, show revealed logo only
-let bgColor       = '#523333';
-let logoColor     = '#5b83fb';
+const COLOR_PRESETS = [
+    { bg: '#292924', logo: '#72df43' },
+    { bg: '#ADBADD', logo: '#D6EE28' },
+    { bg: '#2B3656', logo: '#5B83FB' },
+    { bg: '#BDBBAE', logo: '#D3D1CB' },
+    { bg: '#8B7A5F', logo: '#0147B6' },
+    { bg: '#A2907A', logo: '#F85C04' },
+];
+let { bg: bgColor, logo: logoColor } = COLOR_PRESETS[Math.floor(Math.random() * COLOR_PRESETS.length)];
 
 // ── content cells — heading SVG + text blocks ─────────────────────────────────
-let headingImg  = null;    // Image element for uploaded SVG heading
-let showHeading = false;
-const HEADING_MIN_W = 250, HEADING_MIN_H = 80;
-const TEXT_MIN_W    = 180, TEXT_MIN_H    = 100;
+let headingImgs = [];      // Array of Image elements for uploaded SVG headings
+const HEADING_MIN_W = 350, HEADING_MIN_H = 130;
+const TEXT_MIN_SIZES = [
+    { w: 280, h: 150 },  // H2 – first text block
+    { w: 210, h: 120 },  // H3 – second text block
+    { w: 160, h:  90 },  // H4 – third+ text blocks
+];
 
 // Each entry: { text, el, paraEl, bounds }  (bounds filled per-frame, then reset)
 let textBlocks = [];
 
 // Per-frame claim state — reset at top of draw()
-let _headingClaimed = false;
+let _headingClaimedIdx = 0;
 let _textClaimedIdx = 0;
 
 let outlineEls = OUTLINE_EL_SETS[activeLogoSetKey];
@@ -99,6 +109,23 @@ const MITOSIS_THRESHOLD = 150; // both w and h must exceed this (px) to trigger
 // expand mode — static origin points, narrow roots shoot outward and fade behind tip
 let expanders = [];
 let expandTT  = 0;
+let burstTT         = 0;
+let burstDroplets   = [];
+let burstSeedCache  = [];
+let burstCanvas     = null;
+let burstCanvasKey  = '';
+let burstSpawnTimer = 0;
+let burstAttractors = [];
+const BURST_SPAWN_INTERVAL = 4;    // frames between spawn batches
+const BURST_SPAWN_COUNT    = 3;    // droplets per batch
+const BURST_MAX_DROPLETS   = 320;  // hard cap — fills 6 clusters of ~50+
+const BURST_SIZE_SCALE     = 2.2;  // multiply seed cell size for bigger droplets
+const BURST_MAX_DROP_SIZE  = 55;   // hard cap on longest dimension (px)
+const BURST_WIGGLE_AMP     = 3.5;  // px radius of settled cluster buzz
+const BURST_MIN_SPEED      = 0.6;  // px/frame
+const BURST_MAX_SPEED      = 3.8;  // px/frame
+const BURST_WOBBLE         = 0.04; // max angle drift per frame
+const BURST_SPLIT_P        = 0.005;// probability of splitting per frame
 const EXPAND_ROOT_SPEED  = 2.2;   // px per frame tip growth
 const EXPAND_ROOT_SIGMA  = 130;   // Gaussian width of each root (px)
 const EXPAND_ROOT_TRAIL  = 180;   // frames of trail per arm (longer = fades later)
@@ -118,6 +145,9 @@ let xyzCamH = 0, xyzCamV = 0; // camera orbit degrees (horizontal, vertical)
 function setup() {
     frameRate(30);
     canvas = createCanvas(window.innerWidth, window.innerHeight);
+    let faceStyle = document.createElement('style');
+    faceStyle.textContent = "@font-face { font-family: 'TimesNowLight'; src: url('fonts/Times Now Light.otf') format('opentype'); }";
+    document.head.appendChild(faceStyle);
 
     Object.keys(LOGO_SETS).forEach(k => {
         LOGO_SETS[k].forEach((def, i) => {
@@ -161,7 +191,7 @@ function draw() {
             tb.el.style.display = 'none';
         }
     });
-    _headingClaimed = false;
+    _headingClaimedIdx = 0;
     _textClaimedIdx = 0;
     textBlocks.forEach(tb => { tb.bounds = null; });
 
@@ -196,10 +226,11 @@ function draw() {
     if      (movement === 'swarm')   drawSwarm();
     else if (movement === 'organic') drawGrow();
     else if (movement === 'expand')  drawExpand();
+    else if (movement === 'burst')   drawBurst();
     else {
         background(bgColor);
         if (logoEls[logoIdx].loaded)
-            splitLogoImages(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
+            { let r = logoImageRegion(); splitLogoImages(0, 0, canvas.width, canvas.height, r.ix, r.iy, r.iw, r.ih, 0, 1); }
     }
 }
 
@@ -278,6 +309,29 @@ function getLogoCanvas() {
     tctx.putImageData(px, 0, 0);
     _logoCache = tc; _logoCacheKey = key;
     return tc;
+}
+
+// Returns the image-space region (ix, iy, iw, ih) for the root-level split calls,
+// adjusted so the logo is centered at `logoScale` fraction of the canvas.
+// The grid covers the full canvas; cells outside the logo area show bgColor naturally.
+function logoImageRegion() {
+    let iw = LOGO.w / logoScale;
+    let ih = LOGO.contentH / logoScale;
+    let ix = -(iw - LOGO.w) / 2;
+    let iy = -(ih - LOGO.contentH) / 2;
+    return { ix, iy, iw, ih };
+}
+
+// Returns true if the cell centre falls within the canvas region that the logo occupies.
+// Derived from logoImageRegion(): logo content (0..LOGO.w, 0..LOGO.contentH) maps to
+// ((1-logoScale)/2 .. (1+logoScale)/2) of canvas dimensions.
+function inLogoBounds(x, y, w, h) {
+    let lx = (1 - logoScale) / 2 * canvas.width;
+    let rx = (1 + logoScale) / 2 * canvas.width;
+    let ty = (1 - logoScale) / 2 * canvas.height;
+    let by = (1 + logoScale) / 2 * canvas.height;
+    let cx = x + w * 0.5, cy = y + h * 0.5;
+    return cx >= lx && cx <= rx && cy >= ty && cy <= by;
 }
 
 // ── x/y drawing ───────────────────────────────────────────────────────────────
@@ -369,7 +423,8 @@ function _clipPolyHalfPlane(poly, dx, dy, c) {
 function drawVoronoiGrid() {
     if (!logoEls[logoIdx] || !logoEls[logoIdx].loaded) return;
     let W = canvas.width, H = canvas.height;
-    let seeds = collectVoronoiSeeds(0, 0, W, H, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
+    let r = logoImageRegion();
+    let seeds = collectVoronoiSeeds(0, 0, W, H, r.ix, r.iy, r.iw, r.ih, 0, 1);
 
     // Pre-compute all Voronoi polygons
     let cells = seeds.map((s, i) => {
@@ -466,45 +521,10 @@ function drawImageCover(img, x, y, w, h) {
 }
 
 // Unified leaf-cell renderer used by every mode.
-// When showCircles is on the SHAPE of each cell becomes an ellipse whose
-// dimensions match the full cell width × height — so wide cells → wide ovals,
-// tall cells → tall ovals, square cells → circles.  The existing rectangle
-// content (logo, grid lines, etc.) is drawn normally when circles are off.
 function drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId) {
     let rx = Math.round(x), ry = Math.round(y);
     let rw = Math.round(x + w) - rx, rh = Math.round(y + h) - ry;
     let cx = x + w / 2, cy = y + h / 2;
-
-    if (showCircles) {
-        // Clip to a full-cell ellipse (w × h), then draw content inside.
-        // When no content is present, just show the oval outline so the grid
-        // structure is still visible.
-        let ctx = drawingContext;
-        ctx.save();
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, w / 2, h / 2, 0, 0, Math.PI * 2);
-        ctx.clip();
-
-        let drewContent = false;
-        randomSeed(nodeId * 17 + 3331);
-        let pool = extraImages.slice(0, imgCount).filter(img => img !== null);
-        if (showImages && pool.length > 0 && random() < 0.35 && w > 80 && h > 50) {
-            drawImageCover(pool[floor(random() * pool.length)], x, y, w, h);
-            drewContent = true;
-        } else if (showLogo) {
-            drawRegion(x, y, w, h, ix, iy, iw, ih);
-            drewContent = true;
-        }
-
-        ctx.restore();
-
-        // Show oval outline when there's no content, or when grid/outline are on
-        if (!drewContent || showOutline || showGrid) {
-            noFill(); stroke(logoColor); strokeWeight(0.7);
-            ellipse(cx, cy, w, h);
-        }
-        return;
-    }
 
     // ── normal rect rendering ─────────────────────────────────────────────────
     randomSeed(nodeId * 17 + 3331);
@@ -531,13 +551,10 @@ function splitLogoImages(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
     randomSeed(nodeId + floor(ran * 100));
     let { amp, stopP } = LOGO;
     if ((random() < stopP && n > 3) || n > maxDepth) {
-        if (showHeading && !_headingClaimed && headingImg && w >= HEADING_MIN_W && h >= HEADING_MIN_H) {
-            _headingClaimed = true; drawHeadingCell(x, y, w, h); return;
+        if (_headingClaimedIdx < headingImgs.length && w >= HEADING_MIN_W && h >= HEADING_MIN_H && inLogoBounds(x, y, w, h)) {
+            drawHeadingCell(x, y, w, h, headingImgs[_headingClaimedIdx++]); return;
         }
-        if (_textClaimedIdx < textBlocks.length && textBlocks[_textClaimedIdx].text && w >= TEXT_MIN_W && h >= TEXT_MIN_H) {
-            textBlocks[_textClaimedIdx].bounds = { x, y, w, h }; _textClaimedIdx++;
-            drawTextBgCell(x, y, w, h); return;
-        }
+        if (_textClaimedIdx < textBlocks.length) { let _tb = textBlocks[_textClaimedIdx], _ms = TEXT_MIN_SIZES[Math.min(_tb.level, TEXT_MIN_SIZES.length-1)]; if (_tb.text && w >= _ms.w && h >= _ms.h) { _tb.bounds = { x, y, w, h }; _textClaimedIdx++; drawTextBgCell(x, y, w, h); return; } }
         drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId);
         return;
     }
@@ -596,7 +613,7 @@ function drawSwarm() {
     if (!paused) { swarmTT += 1.8; updateSwarm(); }
     background(bgColor);
     if (!logoEls[logoIdx].loaded) return;
-    splitLogoMouse(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
+    { let r = logoImageRegion(); splitLogoMouse(0, 0, canvas.width, canvas.height, r.ix, r.iy, r.iw, r.ih, 0, 1); }
 }
 
 function splitLogoMouse(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
@@ -619,13 +636,10 @@ function splitLogoMouse(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
     let localDepth = Math.max(1, Math.round(influence * maxDepth));
 
     if (n >= localDepth) {
-        if (showHeading && !_headingClaimed && headingImg && w >= HEADING_MIN_W && h >= HEADING_MIN_H) {
-            _headingClaimed = true; drawHeadingCell(x, y, w, h); return;
+        if (_headingClaimedIdx < headingImgs.length && w >= HEADING_MIN_W && h >= HEADING_MIN_H && inLogoBounds(x, y, w, h)) {
+            drawHeadingCell(x, y, w, h, headingImgs[_headingClaimedIdx++]); return;
         }
-        if (_textClaimedIdx < textBlocks.length && textBlocks[_textClaimedIdx].text && w >= TEXT_MIN_W && h >= TEXT_MIN_H) {
-            textBlocks[_textClaimedIdx].bounds = { x, y, w, h }; _textClaimedIdx++;
-            drawTextBgCell(x, y, w, h); return;
-        }
+        if (_textClaimedIdx < textBlocks.length) { let _tb = textBlocks[_textClaimedIdx], _ms = TEXT_MIN_SIZES[Math.min(_tb.level, TEXT_MIN_SIZES.length-1)]; if (_tb.text && w >= _ms.w && h >= _ms.h) { _tb.bounds = { x, y, w, h }; _textClaimedIdx++; drawTextBgCell(x, y, w, h); return; } }
         drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId);
         return;
     }
@@ -653,7 +667,7 @@ function splitLogoMouse(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
 function drawGrow() {
     background(bgColor);
     if (!logoEls[logoIdx].loaded) return;
-    splitLogoGrow(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
+    { let r = logoImageRegion(); splitLogoGrow(0, 0, canvas.width, canvas.height, r.ix, r.iy, r.iw, r.ih, 0, 1); }
 }
 
 // Identical recursion to splitLogoImages — same animated grid — leaf nodes go through mitosis
@@ -694,13 +708,10 @@ function renderLeafGrow(x, y, w, h, ix, iy, iw, ih, nodeId) {
     }
 
     // Content cells take priority — prevent mitosis in claimed cells
-    if (showHeading && !_headingClaimed && headingImg && w >= HEADING_MIN_W && h >= HEADING_MIN_H) {
-        _headingClaimed = true; mitosisMap.delete(nodeId); drawHeadingCell(x, y, w, h); return;
+    if (_headingClaimedIdx < headingImgs.length && w >= HEADING_MIN_W && h >= HEADING_MIN_H && inLogoBounds(x, y, w, h)) {
+        mitosisMap.delete(nodeId); drawHeadingCell(x, y, w, h, headingImgs[_headingClaimedIdx++]); return;
     }
-    if (_textClaimedIdx < textBlocks.length && textBlocks[_textClaimedIdx].text && w >= TEXT_MIN_W && h >= TEXT_MIN_H) {
-        textBlocks[_textClaimedIdx].bounds = { x, y, w, h }; _textClaimedIdx++;
-        mitosisMap.delete(nodeId); drawTextBgCell(x, y, w, h); return;
-    }
+    if (_textClaimedIdx < textBlocks.length) { let _tb = textBlocks[_textClaimedIdx], _ms = TEXT_MIN_SIZES[Math.min(_tb.level, TEXT_MIN_SIZES.length-1)]; if (_tb.text && w >= _ms.w && h >= _ms.h) { _tb.bounds = { x, y, w, h }; _textClaimedIdx++; mitosisMap.delete(nodeId); drawTextBgCell(x, y, w, h); return; } }
 
     // Normal render this frame
     drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId);
@@ -840,7 +851,7 @@ function drawExpand() {
     if (!paused) updateExpanders();
     background(bgColor);
     if (!logoEls[logoIdx].loaded) return;
-    splitLogoExpand(0, 0, canvas.width, canvas.height, 0, 0, LOGO.w, LOGO.contentH, 0, 1);
+    { let r = logoImageRegion(); splitLogoExpand(0, 0, canvas.width, canvas.height, r.ix, r.iy, r.iw, r.ih, 0, 1); }
 }
 
 function splitLogoExpand(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
@@ -875,13 +886,10 @@ function splitLogoExpand(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
 
 function renderLeafExpand(x, y, w, h, ix, iy, iw, ih, nodeId) {
     // Content cells always visible
-    if (showHeading && !_headingClaimed && headingImg && w >= HEADING_MIN_W && h >= HEADING_MIN_H) {
-        _headingClaimed = true; drawHeadingCell(x, y, w, h); return;
+    if (_headingClaimedIdx < headingImgs.length && w >= HEADING_MIN_W && h >= HEADING_MIN_H && inLogoBounds(x, y, w, h)) {
+        drawHeadingCell(x, y, w, h, headingImgs[_headingClaimedIdx++]); return;
     }
-    if (_textClaimedIdx < textBlocks.length && textBlocks[_textClaimedIdx].text && w >= TEXT_MIN_W && h >= TEXT_MIN_H) {
-        textBlocks[_textClaimedIdx].bounds = { x, y, w, h }; _textClaimedIdx++;
-        drawTextBgCell(x, y, w, h); return;
-    }
+    if (_textClaimedIdx < textBlocks.length) { let _tb = textBlocks[_textClaimedIdx], _ms = TEXT_MIN_SIZES[Math.min(_tb.level, TEXT_MIN_SIZES.length-1)]; if (_tb.text && w >= _ms.w && h >= _ms.h) { _tb.bounds = { x, y, w, h }; _textClaimedIdx++; drawTextBgCell(x, y, w, h); return; } }
 
     let inf = expanderInfluence(x, y, w, h);
 
@@ -896,6 +904,262 @@ function renderLeafExpand(x, y, w, h, ix, iy, iw, ih, nodeId) {
 
     // Fully inside the ring — reveal content
     drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId);
+}
+
+// ── burst mode — wandering droplet particle system ────────────────────────────
+
+// Pre-render the full logo to an offscreen canvas with TRANSPARENT background —
+// only logo-coloured pixels are opaque, so droplets show just the logo shape.
+function ensureBurstCanvas() {
+    let pd  = drawingContext.canvas.width / canvas.width;
+    let key = `${logoIdx}_${activeLogoSetKey}_${logoColor}_${canvas.width}_${canvas.height}_${logoScale.toFixed(3)}`;
+    if (burstCanvasKey === key && burstCanvas) return burstCanvas;
+    if (!logoEls[logoIdx] || !logoEls[logoIdx].loaded) return null;
+    let pw = Math.round(canvas.width * pd), ph = Math.round(canvas.height * pd);
+    let bc = document.createElement('canvas');
+    bc.width = pw; bc.height = ph;
+    let bctx = bc.getContext('2d');
+    // White fill so transparent SVG areas → white; logo shapes → dark
+    bctx.fillStyle = '#ffffff';
+    bctx.fillRect(0, 0, pw, ph);
+    let r = logoImageRegion();
+    let sx = canvas.width / r.iw * pd, sy = canvas.height / r.ih * pd;
+    bctx.drawImage(logoEls[logoIdx].el, -r.ix * sx, -r.iy * sy, LOGO.w * sx, LOGO.h * sy);
+    let lg = hexToRgb(logoColor);
+    let px = bctx.getImageData(0, 0, pw, ph);
+    for (let i = 0; i < px.data.length; i += 4) {
+        // lum: 0 = pure dark (logo), 1 = white (background / letter holes)
+        let lum = (px.data[i] + px.data[i+1] + px.data[i+2]) / (3 * 255);
+        let a = Math.max(0, 1 - lum / 0.45) * 255;  // dark pixels → opaque; white → transparent
+        if (a < 12) {
+            px.data[i] = px.data[i+1] = px.data[i+2] = px.data[i+3] = 0;
+        } else {
+            px.data[i]   = lg.r;
+            px.data[i+1] = lg.g;
+            px.data[i+2] = lg.b;
+            px.data[i+3] = Math.min(255, Math.round(a));
+        }
+    }
+    bctx.putImageData(px, 0, 0);
+    burstCanvas = bc; burstCanvasKey = key;
+    return bc;
+}
+
+// Deterministic leaf-cell collector (mirrors splitLogoImages recursion at t=0).
+function collectBurstSeeds(x, y, w, h, ix, iy, iw, ih, n) {
+    let { amp } = LOGO;
+    let crx = 0.5 + amp * Math.sin(n * 50.0);
+    crx = Math.max(Math.min(crx, 1 - minRatio), minRatio);
+    let cry = 0.5 + amp * Math.cos(n * 9930.0);
+    cry = Math.max(Math.min(cry, 1 - minRatio), minRatio);
+    if (n >= maxDepth) return [{ x, y, w, h, ix, iy, iw, ih }];
+    let ww = w * crx, ww2 = w - ww, hh = h * cry, hh2 = h - hh;
+    let iww = iw * 0.5, iww2 = iw - iww, ihh = ih * 0.5, ihh2 = ih - ihh;
+    let out = [];
+    if (n <= 1) {
+        out.push(...collectBurstSeeds(x,    y,    ww,  hh,  ix,     iy,     iww,  ihh,  n+1));
+        out.push(...collectBurstSeeds(x+ww, y,    ww2, hh,  ix+iww, iy,     iww2, ihh,  n+1));
+        out.push(...collectBurstSeeds(x,    y+hh, ww,  hh2, ix,     iy+ihh, iww,  ihh2, n+1));
+        out.push(...collectBurstSeeds(x+ww, y+hh, ww2, hh2, ix+iww, iy+ihh, iww2, ihh2, n+1));
+    } else if (n % 2 === 0) {
+        out.push(...collectBurstSeeds(x,    y, ww,  h, ix,     iy, iww,  ih, n+1));
+        out.push(...collectBurstSeeds(x+ww, y, ww2, h, ix+iww, iy, iww2, ih, n+1));
+    } else {
+        out.push(...collectBurstSeeds(x, y,    w, hh,  ix, iy,     iw, ihh,  n+1));
+        out.push(...collectBurstSeeds(x, y+hh, w, hh2, ix, iy+ihh, iw, ihh2, n+1));
+    }
+    return out;
+}
+
+// Build seed list filtered to logo-coloured cells only (so only blue pieces fly).
+function refreshBurstSeeds() {
+    let bc = burstCanvas; if (!bc) return;
+    let pd = bc.width / canvas.width;
+    let bctx = bc.getContext('2d');
+    let bg = hexToRgb(bgColor);
+    let r = logoImageRegion();
+    let all = collectBurstSeeds(0, 0, canvas.width, canvas.height, r.ix, r.iy, r.iw, r.ih, 0);
+    burstSeedCache = all.filter(s => {
+        let cx = Math.floor((s.x + s.w * 0.5) * pd);
+        let cy = Math.floor((s.y + s.h * 0.5) * pd);
+        let p = bctx.getImageData(cx, cy, 1, 1).data;
+        return Math.abs(p[0]-bg.r) + Math.abs(p[1]-bg.g) + Math.abs(p[2]-bg.b) > 45;
+    });
+}
+
+// Place 6 attractor points randomly on the canvas edges, each with a slow drift velocity.
+function initBurstAttractors() {
+    burstAttractors = [];
+    let W = canvas.width, H = canvas.height;
+    for (let i = 0; i < 6; i++) {
+        let edge = Math.floor(Math.random() * 4);
+        let x, y;
+        if      (edge === 0) { x = 15 + Math.random() * (W - 30); y = 0; }
+        else if (edge === 1) { x = W;  y = 15 + Math.random() * (H - 30); }
+        else if (edge === 2) { x = 15 + Math.random() * (W - 30); y = H; }
+        else                 { x = 0;  y = 15 + Math.random() * (H - 30); }
+        burstAttractors.push({ x, y, vx: (Math.random()-0.5)*0.4, vy: (Math.random()-0.5)*0.4 });
+    }
+}
+
+// Slowly drift each attractor along the canvas edges. Clusters migrate with them.
+function updateBurstAttractors() {
+    let W = canvas.width, H = canvas.height, margin = 55;
+    for (let a of burstAttractors) {
+        a.vx += (Math.random() - 0.5) * 0.12;
+        a.vy += (Math.random() - 0.5) * 0.12;
+        // Spring pull toward nearest edge so they stay near the perimeter
+        let dL = a.x, dR = W - a.x, dT = a.y, dB = H - a.y;
+        let nearest = Math.min(dL, dR, dT, dB);
+        if (nearest > margin) {
+            if      (dL === nearest) a.vx -= 0.08;
+            else if (dR === nearest) a.vx += 0.08;
+            else if (dT === nearest) a.vy -= 0.08;
+            else                     a.vy += 0.08;
+        }
+        a.vx *= 0.95; a.vy *= 0.95;  // damping
+        a.x = Math.max(5, Math.min(W - 5, a.x + a.vx));
+        a.y = Math.max(5, Math.min(H - 5, a.y + a.vy));
+    }
+}
+
+function spawnBurstDroplet() {
+    if (!burstSeedCache.length || !burstAttractors.length) return;
+    let s = burstSeedCache[Math.floor(Math.random() * burstSeedCache.length)];
+    let ccx = canvas.width / 2, ccy = canvas.height / 2;
+    let dx = (s.x + s.w * 0.5) - ccx, dy = (s.y + s.h * 0.5) - ccy;
+    // Assign nearest attractor so droplets flow naturally outward to closest edge point
+    let attrIdx = 0, bestD = Infinity;
+    for (let j = 0; j < burstAttractors.length; j++) {
+        let ax = burstAttractors[j].x - s.x, ay = burstAttractors[j].y - s.y;
+        let d2 = ax*ax + ay*ay;
+        if (d2 < bestD) { bestD = d2; attrIdx = j; }
+    }
+    let dw = s.w * BURST_SIZE_SCALE, dh = s.h * BURST_SIZE_SCALE;
+    // Cap the longest side, scale the other proportionally so shape is preserved
+    let capScale = Math.min(1, BURST_MAX_DROP_SIZE / Math.max(dw, dh));
+    dw *= capScale; dh *= capScale;
+    burstDroplets.push({
+        x: s.x - (dw - s.w) * 0.5, y: s.y - (dh - s.h) * 0.5,  // centre on seed cell
+        w: dw, h: dh,
+        srcX: s.x, srcY: s.y, srcW: s.w, srcH: s.h,
+        angle: Math.atan2(dy, dx),
+        speed: BURST_MIN_SPEED + Math.random() * (BURST_MAX_SPEED - BURST_MIN_SPEED),
+        attractorIdx: attrIdx,
+        splitCooldown: 40 + Math.floor(Math.random() * 60),
+        settled: false,
+        phase: Math.random() * Math.PI * 2,   // unique wiggle phase per droplet
+        settledX: 0, settledY: 0,             // locked position when settled
+    });
+}
+
+function updateBurstDroplets() {
+    let toAdd = [];
+    for (let i = burstDroplets.length - 1; i >= 0; i--) {
+        let d = burstDroplets[i];
+        if (d.settled) {
+            // Expire after a while to free up slots for new droplets
+            d.settledAge = (d.settledAge || 0) + 1;
+            if (d.settledAge > 420) { burstDroplets.splice(i, 1); continue; }
+            // Track attractor as it drifts — whole cluster migrates together
+            let a = burstAttractors[d.attractorIdx];
+            d.settledX = Math.max(d.w, Math.min(canvas.width  - d.w, a.x + d.offsetX));
+            d.settledY = Math.max(d.h, Math.min(canvas.height - d.h, a.y + d.offsetY));
+            // Spring random-walk buzz around the (moving) anchor
+            d.vx = (d.vx || 0) + (Math.random() - 0.5) * 1.4;
+            d.vy = (d.vy || 0) + (Math.random() - 0.5) * 1.4;
+            d.vx += (d.settledX - d.x) * 0.06;
+            d.vy += (d.settledY - d.y) * 0.06;
+            d.vx *= 0.78; d.vy *= 0.78;
+            let spd = Math.sqrt(d.vx*d.vx + d.vy*d.vy);
+            if (spd > BURST_WIGGLE_AMP) { d.vx *= BURST_WIGGLE_AMP/spd; d.vy *= BURST_WIGGLE_AMP/spd; }
+            d.x += d.vx; d.y += d.vy;
+            continue;
+        }
+        let attr = burstAttractors[d.attractorIdx];
+        let cx = d.x + d.w * 0.5, cy = d.y + d.h * 0.5;
+        let dx = attr.x - cx, dy = attr.y - cy;
+        let dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < 18) {
+            d.settled = true;
+            // Scatter offset stored relative to attractor so cluster migrates with it
+            let scatter = 22 + Math.random() * 72;
+            let sAngle  = Math.random() * Math.PI * 2;
+            d.offsetX = Math.cos(sAngle) * scatter;
+            d.offsetY = Math.sin(sAngle) * scatter;
+            d.settledX = Math.max(d.w, Math.min(canvas.width  - d.w, attr.x + d.offsetX));
+            d.settledY = Math.max(d.h, Math.min(canvas.height - d.h, attr.y + d.offsetY));
+            continue;
+        }
+        // Wobble, then gently steer toward attractor
+        d.angle += (Math.random() - 0.5) * 2 * BURST_WOBBLE;
+        let targetAngle = Math.atan2(dy, dx);
+        let da = targetAngle - d.angle;
+        while (da >  Math.PI) da -= 2 * Math.PI;
+        while (da < -Math.PI) da += 2 * Math.PI;
+        d.angle += da * 0.06;
+        // Irregular speed — sometimes dart, sometimes crawl
+        d.speed += (Math.random() - 0.5) * 0.7;
+        d.speed  = Math.max(BURST_MIN_SPEED, Math.min(BURST_MAX_SPEED, d.speed));
+        d.x += Math.cos(d.angle) * d.speed;
+        d.y += Math.sin(d.angle) * d.speed;
+        // Split: parent shrinks, child heads to a different attractor
+        d.splitCooldown--;
+        if (d.splitCooldown <= 0 && Math.random() < BURST_SPLIT_P
+                && burstDroplets.length + toAdd.length < BURST_MAX_DROPLETS) {
+            let spread = 0.2 + Math.random() * 0.2;
+            let nw = d.w * 0.72, nh = d.h * 0.72;
+            let childAttr = (d.attractorIdx + 1 + Math.floor(Math.random() * (burstAttractors.length - 1))) % burstAttractors.length;
+            toAdd.push({
+                x: d.x, y: d.y, w: nw, h: nh,
+                srcX: d.srcX, srcY: d.srcY, srcW: d.srcW, srcH: d.srcH,
+                angle: d.angle + spread,
+                speed: BURST_MIN_SPEED + Math.random() * (BURST_MAX_SPEED - BURST_MIN_SPEED),
+                attractorIdx: childAttr,
+                splitCooldown: 70 + Math.floor(Math.random() * 70),
+                settled: false,
+                phase: Math.random() * Math.PI * 2,
+                settledX: 0, settledY: 0,
+            });
+            d.w = nw; d.h = nh;
+            d.angle -= spread;
+            d.speed  = BURST_MIN_SPEED + Math.random() * (BURST_MAX_SPEED - BURST_MIN_SPEED);
+            d.splitCooldown = 70 + Math.floor(Math.random() * 70);
+        }
+    }
+    for (let d of toAdd) burstDroplets.push(d);
+}
+
+// Always draw at full opacity — transparency comes only from the burst canvas alpha channel.
+function drawBurstDroplets() {
+    let bc = burstCanvas; if (!bc) return;
+    let pd = bc.width / canvas.width;
+    let ctx = drawingContext;
+    for (let d of burstDroplets) {
+        ctx.drawImage(bc,
+            Math.round(d.srcX * pd), Math.round(d.srcY * pd),
+            Math.round(d.srcW * pd), Math.round(d.srcH * pd),
+            d.x, d.y, d.w, d.h);
+    }
+}
+
+function drawBurst() {
+    if (!logoEls[logoIdx].loaded) return;
+    let bc = ensureBurstCanvas(); if (!bc) return;
+    if (!paused) {
+        burstTT++;
+        if (!burstSeedCache.length) refreshBurstSeeds();
+        burstSpawnTimer++;
+        if (burstSpawnTimer >= BURST_SPAWN_INTERVAL && burstDroplets.length < BURST_MAX_DROPLETS) {
+            for (let i = 0; i < BURST_SPAWN_COUNT; i++) spawnBurstDroplet();
+            burstSpawnTimer = 0;
+        }
+        updateBurstAttractors();
+        updateBurstDroplets();
+    }
+    background(bgColor);
+    { let r = logoImageRegion(); splitLogoImages(0, 0, canvas.width, canvas.height, r.ix, r.iy, r.iw, r.ih, 0, 1); }
+    drawBurstDroplets();
 }
 
 // ── x/y/z Three.js depth mode ─────────────────────────────────────────────────
@@ -1154,51 +1418,63 @@ function rebuildXYZLogoTex() {
 
 // ── content-cell helpers ──────────────────────────────────────────────────────
 
-function drawHeadingCell(x, y, w, h) {
+function drawHeadingCell(x, y, w, h, img) {
     let ctx = drawingContext;
     let rx = Math.round(x), ry = Math.round(y), rw = Math.round(x+w)-rx, rh = Math.round(y+h)-ry;
-    ctx.fillStyle = bgColor; ctx.fillRect(rx, ry, rw, rh);
-    if (headingImg && headingImg.complete && headingImg.naturalWidth > 0) {
-        let iw = headingImg.naturalWidth || 300, ih = headingImg.naturalHeight || 150;
+    if (img && img.complete && img.naturalWidth > 0) {
+        let iw = img.naturalWidth || 300, ih = img.naturalHeight || 150;
         let pad = 12, availW = w - 2 * pad, availH = h - 2 * pad;
         let ir = iw / ih, cr = availW / availH;
         let dw = ir > cr ? availW : availH * ir;
         let dh = ir > cr ? availW / ir : availH;
-        ctx.drawImage(headingImg, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+        // Offscreen canvas at physical pixel resolution to avoid retina blur
+        let pd = drawingContext.canvas.width / canvas.width;
+        let odw = Math.max(1, Math.round(dw * pd)), odh = Math.max(1, Math.round(dh * pd));
+        let oc = document.createElement('canvas');
+        oc.width = odw; oc.height = odh;
+        let octx = oc.getContext('2d');
+        octx.drawImage(img, 0, 0, odw, odh);
+        octx.globalCompositeOperation = 'source-in';
+        octx.fillStyle = logoColor;
+        octx.fillRect(0, 0, odw, odh);
+        ctx.drawImage(oc, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
     }
-    if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
 }
 
 function drawTextBgCell(x, y, w, h) {
-    // White rectangle — the HTML overlay provides the actual text rendering
-    fill(bgColor); noStroke(); rect(Math.round(x), Math.round(y), Math.round(x+w)-Math.round(x), Math.round(y+h)-Math.round(y));
-    if (showOutline) { noFill(); stroke(logoColor); strokeWeight(0.5); rect(x, y, w, h); }
+    let rx = Math.round(x), ry = Math.round(y), rw = Math.round(x+w)-rx, rh = Math.round(y+h)-ry;
+    fill(logoColor); noStroke(); rect(rx, ry, rw, rh);
 }
 
 // Create a new text block entry with its own absolutely-positioned HTML overlay.
+// level 0 = H2 (first block), 1 = H3 (second), 2+ = H4 (third onwards)
 function addTextBlock(initialText) {
+    let level = textBlocks.length; // index at time of creation
+    let fontSize = level === 0 ? 'clamp(28px, 9cqi, 72px)'   // H2
+                 : level === 1 ? 'clamp(20px, 6.5cqi, 52px)' // H3
+                 :               'clamp(13px, 4.2cqi, 34px)'; // H4
     let el = document.createElement('div');
     css(el, {
-        position: 'fixed', display: 'none', overflow: 'hidden',
-        background: '#ffffff', padding: '12px', boxSizing: 'border-box',
+        position: 'fixed', display: 'none', overflow: 'visible',
+        background: 'transparent', padding: '12px', boxSizing: 'border-box',
+        border: `1px solid ${bgColor}`,
         containerType: 'inline-size', pointerEvents: 'none', zIndex: '4',
     });
     let p = document.createElement('p');
-    // clamp(min, fluid-via-container-query, max) — scales with cell width
     p.style.cssText = [
         'margin:0',
-        'font-size:clamp(14px, 4.2cqi, 33px)',
-        'line-height:1.5',
+        `font-size:${fontSize}`,
+        'line-height:1',
         'overflow-wrap:break-word',
         'word-break:break-word',
-        'font-family:sans-serif',
-        'color:#111',
+        "font-family:'TimesNowLight', serif",
+        `color:${bgColor}`,
         'text-wrap:pretty',
     ].join(';');
     p.textContent = initialText || '';
     el.appendChild(p);
     document.body.appendChild(el);
-    let tb = { text: initialText || '', el, paraEl: p, bounds: null };
+    let tb = { text: initialText || '', el, paraEl: p, bounds: null, level };
     textBlocks.push(tb);
     return tb;
 }
@@ -1235,8 +1511,8 @@ function buildUI() {
     let panel = document.createElement('div');
     css(panel, {
         position: 'fixed', top: '16px', right: '16px', zIndex: '10',
-        display: 'flex', flexDirection: 'column', gap: '8px',
-        background: 'rgba(200,200,200,0.85)', padding: '10px 12px',
+        display: 'flex', flexDirection: 'column', gap: '5px',
+        background: 'rgba(200,200,200,0.85)', padding: '8px 10px',
         borderRadius: '10px', fontFamily: 'monospace', fontSize: '10px',
         color: '#222', userSelect: 'none', width: '130px'
     });
@@ -1248,7 +1524,7 @@ function buildUI() {
 
     // Two button groups; all buttons share one active-state tracker so
     // clicking either group deselects the other.
-    let slicesCtrl, cellCtrl, imagesSliderCtrl, imagesCtrl, randomLogoCtrl, camHCtrl, camVCtrl, gridCtrl, logoOnlyCtrl;
+    let slicesCtrl, cellCtrl, imagesSliderCtrl, imagesCtrl, randomLogoCtrl, camHCtrl, camVCtrl, gridCtrl, logoOnlyCtrl, logoSizeCtrl;
     let allModeButtons = []; // filled below, used to sync highlight across both groups
 
     function makeModeBtn(label, modeKey) {
@@ -1300,6 +1576,13 @@ function buildUI() {
                     slicesCtrl.set(8); cellCtrl.set(0.40); showOutline = false;
                     gridCtrl.set(false); logoOnlyCtrl.set(true);
                 }
+                if (movement === 'burst') {
+                    burstTT = 0; burstDroplets = []; burstSeedCache = [];
+                    burstCanvas = null; burstCanvasKey = ''; burstSpawnTimer = 0;
+                    initBurstAttractors();
+                    slicesCtrl.set(6); cellCtrl.set(0.25); logoSizeCtrl.set(0.7);
+                    showOutline = false; gridCtrl.set(false); logoOnlyCtrl.set(false);
+                }
             }
         });
         return btn;
@@ -1319,7 +1602,7 @@ function buildUI() {
 
     let cellRow = document.createElement('div');
     css(cellRow, { display: 'flex', flexWrap: 'wrap', gap: '4px' });
-    [['x/y/z', 'xyz'], ['Divide', 'organic'], ['Grow', 'expand']].forEach(([label, key]) => cellRow.appendChild(makeModeBtn(label, key)));
+    [['x/y/z', 'xyz'], ['Divide', 'organic'], ['Grow', 'expand'], ['Burst', 'burst']].forEach(([label, key]) => cellRow.appendChild(makeModeBtn(label, key)));
     panel.appendChild(cellRow);
 
     // Camera orbit sliders — only visible in xyz mode
@@ -1407,8 +1690,12 @@ function buildUI() {
     css(colHeading, { fontWeight: 'bold', opacity: '0.7', marginTop: '2px' });
     panel.appendChild(colHeading);
 
-    addColorRow(panel, 'background', bgColor, v => {
+    let bgColorCtrl   = addColorRow(panel, 'background', bgColor, v => {
         bgColor = v;
+        textBlocks.forEach(tb => {
+            if (tb.paraEl) tb.paraEl.style.color = v;
+            if (tb.el) tb.el.style.borderColor = v;
+        });
         if (xyzScene) {
             xyzScene.background = new THREE.Color(bgColor);
             if (xyzBlankMat) xyzBlankMat.color.set(bgColor);
@@ -1416,10 +1703,28 @@ function buildUI() {
         }
         if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
     });
-    addColorRow(panel, 'logo', logoColor, v => {
+    let logoColorCtrl = addColorRow(panel, 'logo', logoColor, v => {
         logoColor = v;
         if (xyzReady && xyzLogoMat) rebuildXYZLogoTex();
     });
+
+    // Colour preset swatches
+    let swatchRow = document.createElement('div');
+    css(swatchRow, { display: 'flex', gap: '4px', marginTop: '4px', flexWrap: 'wrap' });
+    COLOR_PRESETS.forEach(p => {
+        let sw = document.createElement('div');
+        css(sw, { width: '32px', height: '16px', cursor: 'pointer', borderRadius: '3px',
+                  overflow: 'hidden', display: 'flex', border: '1px solid rgba(0,0,0,0.18)', flexShrink: '0' });
+        let lh = document.createElement('div');
+        css(lh, { flex: '1', background: p.bg });
+        let rh = document.createElement('div');
+        css(rh, { flex: '1', background: p.logo });
+        sw.appendChild(lh); sw.appendChild(rh);
+        sw.title = `bg ${p.bg}  /  logo ${p.logo}`;
+        sw.addEventListener('click', () => { bgColorCtrl.set(p.bg); logoColorCtrl.set(p.logo); });
+        swatchRow.appendChild(sw);
+    });
+    panel.appendChild(swatchRow);
 
     // ── Other display options ─────────────────────────────────────────────────
     let hr1 = document.createElement('div');
@@ -1428,40 +1733,62 @@ function buildUI() {
 
     gridCtrl =           addCheckbox(panel, 'grid lines',   showGrid,    v => { showGrid = v; });
                      addCheckbox(panel, 'lines & logo', false, v => { showLinesLogo = v; });
-                     addCheckbox(panel, 'circles',    showCircles, v => { showCircles = v; });
                      addCheckbox(panel, 'voronoi',    showVoronoi, v => { showVoronoi = v; });
     logoOnlyCtrl =   addCheckbox(panel, 'logo only',  logoOnly,    v => { logoOnly = v; });
+    logoSizeCtrl =   addSliderRow(panel, 'logo size', 0.2, 1.0, logoScale, 0.01, v => { logoScale = v; });
 
     // ── Content cells section ─────────────────────────────────────────────────
     let hr2 = document.createElement('hr');
     css(hr2, { borderTop: '1px solid rgba(0,0,0,0.15)', margin: '2px 0' });
     panel.appendChild(hr2);
 
-    // SVG heading
-    let headingRow = document.createElement('div');
-    css(headingRow, { display: 'flex', alignItems: 'center', gap: '6px' });
-    let headingCb = document.createElement('input');
-    headingCb.type = 'checkbox'; headingCb.checked = showHeading;
-    headingCb.addEventListener('change', () => { showHeading = headingCb.checked; });
-    let headingLabel = document.createElement('label');
-    headingLabel.textContent = 'heading svg';
-    css(headingLabel, { fontSize: '11px', cursor: 'pointer' });
-    headingLabel.addEventListener('click', () => { headingCb.click(); });
-    let headingInput = document.createElement('input');
-    headingInput.type = 'file'; headingInput.accept = '.svg,image/svg+xml';
-    css(headingInput, { fontSize: '10px', flex: '1', minWidth: '0' });
-    headingInput.addEventListener('change', () => {
-        let file = headingInput.files[0];
-        if (!file) return;
-        let url = URL.createObjectURL(file);
-        let img = new Image();
-        img.onload = () => { headingImg = img; showHeading = true; headingCb.checked = true; };
-        img.src = url;
+    // SVG headings (multiple)
+    let headingsDiv = document.createElement('div');
+    css(headingsDiv, { display: 'flex', flexDirection: 'column', gap: '3px' });
+
+    function addHeadingUI(img, filename) {
+        headingImgs.push(img);
+        let row = document.createElement('div');
+        css(row, { display: 'flex', alignItems: 'center', gap: '4px' });
+        let lbl = document.createElement('span');
+        lbl.textContent = filename;
+        css(lbl, { fontSize: '10px', flex: '1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+        let removeBtn = document.createElement('button');
+        removeBtn.textContent = '✕';
+        css(removeBtn, { fontSize: '10px', padding: '2px 4px', cursor: 'pointer' });
+        removeBtn.addEventListener('click', () => {
+            let idx = headingImgs.indexOf(img);
+            if (idx !== -1) headingImgs.splice(idx, 1);
+            headingsDiv.removeChild(row);
+        });
+        row.appendChild(lbl);
+        row.appendChild(removeBtn);
+        headingsDiv.appendChild(row);
+    }
+
+    let headingFileInput = document.createElement('input');
+    headingFileInput.type = 'file';
+    headingFileInput.accept = '.svg,image/svg+xml';
+    headingFileInput.multiple = true;
+    headingFileInput.style.display = 'none';
+    headingFileInput.addEventListener('change', () => {
+        for (let file of headingFileInput.files) {
+            let url = URL.createObjectURL(file);
+            let img = new Image();
+            let name = file.name;
+            img.onload = () => { addHeadingUI(img, name); };
+            img.src = url;
+        }
+        headingFileInput.value = '';
     });
-    headingRow.appendChild(headingCb);
-    headingRow.appendChild(headingLabel);
-    headingRow.appendChild(headingInput);
-    panel.appendChild(headingRow);
+    panel.appendChild(headingFileInput);
+
+    let addHeadingBtn = document.createElement('button');
+    addHeadingBtn.textContent = '+ add heading svg';
+    css(addHeadingBtn, { fontSize: '11px', padding: '3px 6px', cursor: 'pointer', alignSelf: 'flex-start' });
+    addHeadingBtn.addEventListener('click', () => headingFileInput.click());
+    panel.appendChild(addHeadingBtn);
+    panel.appendChild(headingsDiv);
 
     // Text blocks container
     let textBlocksDiv = document.createElement('div');
@@ -1492,10 +1819,6 @@ function buildUI() {
         row.appendChild(removeBtn);
         textBlocksDiv.appendChild(row);
     }
-
-    // Default one text block
-    let defaultTb = addTextBlock('');
-    addTextBlockUI(defaultTb);
 
     let addTextBtn = document.createElement('button');
     addTextBtn.textContent = '+ add text block';
@@ -1602,11 +1925,12 @@ function addColorRow(parent, label, value, onChange) {
     css(lbl, { fontSize: '11px', flex: '1' });
     let input = document.createElement('input');
     input.type = 'color'; input.value = value;
-    css(input, { width: '36px', height: '22px', padding: '1px', border: 'none', cursor: 'pointer', background: 'none' });
+    css(input, { width: '36px', height: '17px', padding: '1px', border: 'none', cursor: 'pointer', background: 'none' });
     input.addEventListener('input', () => onChange(input.value));
     row.appendChild(lbl);
     row.appendChild(input);
     parent.appendChild(row);
+    return { set: v => { input.value = v; onChange(v); } };
 }
 
 function addCheckbox(parent, label, val, onChange) {
