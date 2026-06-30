@@ -351,13 +351,9 @@ function drawRegion(x, y, w, h, ix, iy, iw, ih) {
         // PNG/JPG upload: draw as-is, no colour transformation
         ctx.drawImage(logoEls[logoIdx].el, Math.round(x - ix * scaleX), Math.round(y - iy * scaleY),
                       Math.round(LOGO.w * scaleX), Math.round(LOGO.h * scaleY));
-    } else if (_uploadedLogoOrigEl) {
-        // SVG upload: use pre-rendered canvas for colour mapping
-        let lc = getLogoCanvas();
-        if (lc) ctx.drawImage(lc, Math.round(x - ix * scaleX), Math.round(y - iy * scaleY),
-                              Math.round(LOGO.w * scaleX), Math.round(LOGO.h * scaleY));
     } else {
-        // Built-in SVG: draw directly so the browser rasterises at the exact destination scale — no upscale blur.
+        // SVG (built-in or uploaded): draw directly so the browser rasterises at the exact destination
+        // scale — no upscale blur. The CSS filter maps SVG alpha → logoColor / bgColor.
         ensureLogoFilter();
         ctx.filter = 'url(#lcf)';
         ctx.drawImage(logoEls[logoIdx].el,
@@ -473,9 +469,6 @@ function drawVoronoiGrid() {
             let lw = LOGO.w * scaleX,      lh = LOGO.h * scaleY;
             if (_uploadedLogoOrigEl && _uploadedIsRaster) {
                 ctx.drawImage(logoEls[logoIdx].el, lx, ly, lw, lh);
-            } else if (_uploadedLogoOrigEl) {
-                let lc = getLogoCanvas();
-                if (lc) ctx.drawImage(lc, lx, ly, lw, lh);
             } else {
                 ensureLogoFilter();
                 ctx.filter = 'url(#lcf)';
@@ -1567,13 +1560,13 @@ function buildUI() {
                 }
                 if (movement === 'organic') {
                     mitosisMap.clear();
-                    slicesCtrl.set(8);  cellCtrl.set(0.20); imagesSliderCtrl.set(5);
+                    slicesCtrl.set(5);  cellCtrl.set(0.20); imagesSliderCtrl.set(5);
                     imagesCtrl.set(false); showOutline = false; randomLogoCtrl.set(false);
                     gridCtrl.set(false);
                 }
                 if (movement === 'expand')  {
                     expanders = []; expandTT = 0;
-                    slicesCtrl.set(8); cellCtrl.set(0.40); showOutline = false;
+                    slicesCtrl.set(5); cellCtrl.set(0.25); showOutline = false;
                     gridCtrl.set(false); logoOnlyCtrl.set(true);
                 }
                 if (movement === 'burst') {
