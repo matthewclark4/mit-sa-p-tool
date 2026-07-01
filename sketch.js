@@ -1420,17 +1420,23 @@ function drawHeadingCell(x, y, w, h, img) {
         let ir = iw / ih, cr = availW / availH;
         let dw = ir > cr ? availW : availH * ir;
         let dh = ir > cr ? availW / ir : availH;
-        // Offscreen canvas at physical pixel resolution to avoid retina blur
-        let pd = drawingContext.canvas.width / canvas.width;
-        let odw = Math.max(1, Math.round(dw * pd)), odh = Math.max(1, Math.round(dh * pd));
-        let oc = document.createElement('canvas');
-        oc.width = odw; oc.height = odh;
-        let octx = oc.getContext('2d');
-        octx.drawImage(img, 0, 0, odw, odh);
-        octx.globalCompositeOperation = 'source-in';
-        octx.fillStyle = logoColor;
-        octx.fillRect(0, 0, odw, odh);
-        ctx.drawImage(oc, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+        let dx = x + (w - dw) / 2, dy = y + (h - dh) / 2;
+        if (img._isRaster) {
+            // PNG/JPG: draw as-is, no colour transformation
+            ctx.drawImage(img, dx, dy, dw, dh);
+        } else {
+            // SVG: render at physical pixel resolution then colorise to logoColor
+            let pd = drawingContext.canvas.width / canvas.width;
+            let odw = Math.max(1, Math.round(dw * pd)), odh = Math.max(1, Math.round(dh * pd));
+            let oc = document.createElement('canvas');
+            oc.width = odw; oc.height = odh;
+            let octx = oc.getContext('2d');
+            octx.drawImage(img, 0, 0, odw, odh);
+            octx.globalCompositeOperation = 'source-in';
+            octx.fillStyle = logoColor;
+            octx.fillRect(0, 0, odw, odh);
+            ctx.drawImage(oc, dx, dy, dw, dh);
+        }
     }
 }
 
@@ -1761,13 +1767,15 @@ function buildUI() {
 
     let headingFileInput = document.createElement('input');
     headingFileInput.type = 'file';
-    headingFileInput.accept = '.svg,image/svg+xml';
+    headingFileInput.accept = '.svg,.png,.jpg,.jpeg,image/svg+xml,image/png,image/jpeg';
     headingFileInput.multiple = true;
     headingFileInput.style.display = 'none';
     headingFileInput.addEventListener('change', () => {
         for (let file of headingFileInput.files) {
+            let isRaster = !file.type.includes('svg');
             let url = URL.createObjectURL(file);
             let img = new Image();
+            img._isRaster = isRaster;
             let name = file.name;
             img.onload = () => { addHeadingUI(img, name); };
             img.src = url;
@@ -1777,7 +1785,7 @@ function buildUI() {
     panel.appendChild(headingFileInput);
 
     let addHeadingBtn = document.createElement('button');
-    addHeadingBtn.textContent = '+ add heading svg';
+    addHeadingBtn.textContent = '+ add heading';
     css(addHeadingBtn, { fontSize: '11px', padding: '3px 6px', cursor: 'pointer', alignSelf: 'flex-start' });
     addHeadingBtn.addEventListener('click', () => headingFileInput.click());
     panel.appendChild(addHeadingBtn);
