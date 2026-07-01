@@ -67,6 +67,7 @@ let showOutline   = false;
 let logoScale     = 1.0;
 let showVoronoi   = false;
 let logoOnly      = false; // Swarm/Grow: skip white cells, show revealed logo only
+let anchorLogo    = false; // keep logo centred on canvas regardless of animation drift
 const COLOR_PRESETS = [
     { bg: '#292924', logo: '#72df43' },
     { bg: '#ADBADD', logo: '#D6EE28' },
@@ -88,6 +89,21 @@ const TEXT_MIN_SIZES = [
 
 // Each entry: { text, el, paraEl, bounds }  (bounds filled per-frame, then reset)
 let textBlocks = [];
+
+// ── reset grid ────────────────────────────────────────────────────────────────
+let resetGrid      = false;
+let _rgPhase       = 'idle';  // 'idle' | 'to-home' | 'hold' | 'from-home'
+let _rgTick        = 0;       // wait/hold counter
+let _rgProgress    = 0;       // unused (kept for checkbox reset)
+let _rgUserDepth   = 3;       // user's maxDepth captured at animation start
+let _rgUserRatio   = 0.20;    // user's minRatio captured at animation start
+let _rgDepthF      = 3;       // float depth tracker for smooth lerp
+const RG_WAIT      = 150;     // 5s at 30fps before animating
+const RG_HOLD      = 60;      // 2s hold at home position before returning
+const RG_K_FAST    = 5;       // xy mode — matches the grid's own snappy tt pacing
+const RG_K_SLOW    = 18;      // all other modes — slower, more organic feel
+const RG_HOME_DEPTH = 3;
+const RG_HOME_RATIO = 0.45;
 
 // Per-frame claim state — reset at top of draw()
 let _headingClaimedIdx = 0;
@@ -216,6 +232,8 @@ function draw() {
 
     if (movement === 'xyz') { drawXYZ(); return; } // xyz uses its own Three.js canvas
 
+    tickResetGrid();
+
     // Voronoi: take over the full frame — just animated cell outlines, nothing under them
     if (showVoronoi) {
         background(bgColor);
@@ -238,6 +256,43 @@ function draw() {
 
 function hexToRgb(hex) {
     return { r: parseInt(hex.slice(1,3),16), g: parseInt(hex.slice(3,5),16), b: parseInt(hex.slice(5,7),16) };
+}
+
+// Periodically animates maxDepth and minRatio to a simple open grid (3 slices, 0.45 cell)
+// and back. Uses the same exponential lerp as tt so it feels native to the grid's rhythm.
+function tickResetGrid() {
+    if (!resetGrid || paused) return;
+    if (_rgPhase === 'idle') {
+        _rgTick++;
+        if (_rgTick >= RG_WAIT) {
+            _rgUserDepth = maxDepth;
+            _rgUserRatio = minRatio;
+            _rgDepthF    = maxDepth;
+            _rgPhase     = 'to-home';
+        }
+        return;
+    }
+    let k = (movement === 'xy') ? RG_K_FAST : RG_K_SLOW;
+    if (_rgPhase === 'to-home') {
+        _rgDepthF += (RG_HOME_DEPTH - _rgDepthF) / k;
+        minRatio  += (RG_HOME_RATIO  - minRatio)  / k;
+        maxDepth   = Math.round(_rgDepthF);
+        if (Math.abs(_rgDepthF - RG_HOME_DEPTH) < 0.25 && Math.abs(minRatio - RG_HOME_RATIO) < 0.003) {
+            maxDepth = RG_HOME_DEPTH; minRatio = RG_HOME_RATIO; _rgDepthF = RG_HOME_DEPTH;
+            _rgTick = 0; _rgPhase = 'hold';
+        }
+    } else if (_rgPhase === 'hold') {
+        _rgTick++;
+        if (_rgTick >= RG_HOLD) { _rgTick = 0; _rgPhase = 'from-home'; }
+    } else {
+        _rgDepthF += (_rgUserDepth - _rgDepthF) / k;
+        minRatio  += (_rgUserRatio  - minRatio)  / k;
+        maxDepth   = Math.round(_rgDepthF);
+        if (Math.abs(_rgDepthF - _rgUserDepth) < 0.25 && Math.abs(minRatio - _rgUserRatio) < 0.003) {
+            maxDepth = _rgUserDepth; minRatio = _rgUserRatio;
+            _rgTick = 0; _rgPhase = 'idle';
+        }
+    }
 }
 
 // SVG filter-based logo recolouring — avoids pre-rasterising to a canvas so the
@@ -551,9 +606,9 @@ function splitLogoImages(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
         drawLeafCell(x, y, w, h, ix, iy, iw, ih, nodeId);
         return;
     }
-    let crx = 0.5 + amp * Math.sin(tt * (0.01 + n * 0.01) + n * 50);
+    let crx = (anchorLogo && n === 0) ? 0.5 : 0.5 + amp * Math.sin(tt * (0.01 + n * 0.01) + n * 50);
     crx = Math.max(Math.min(crx, 1 - minRatio), minRatio);
-    let cry = 0.5 + amp * Math.cos(tt * (0.01 + n * 0.01) + n * 9930);
+    let cry = (anchorLogo && n === 0) ? 0.5 : 0.5 + amp * Math.cos(tt * (0.01 + n * 0.01) + n * 9930);
     cry = Math.max(Math.min(cry, 1 - minRatio), minRatio);
     let ww = w * crx,   ww2 = w * (1 - crx);
     let hh = h * cry,   hh2 = h * (1 - cry);
@@ -612,9 +667,9 @@ function drawSwarm() {
 function splitLogoMouse(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
     // Slowly animated splits driven by swarmTT (not the global tt)
     let { amp } = LOGO;
-    let crx = 0.5 + amp * Math.sin(swarmTT * 0.012 + nodeId * 0.7);
+    let crx = (anchorLogo && n === 0) ? 0.5 : 0.5 + amp * Math.sin(swarmTT * 0.012 + nodeId * 0.7);
     crx = Math.max(Math.min(crx, 1 - minRatio), minRatio);
-    let cry = 0.5 + amp * Math.cos(swarmTT * 0.012 + nodeId * 1.3);
+    let cry = (anchorLogo && n === 0) ? 0.5 : 0.5 + amp * Math.cos(swarmTT * 0.012 + nodeId * 1.3);
     cry = Math.max(Math.min(cry, 1 - minRatio), minRatio);
 
     // Closest point on this cell to each swarm circle — take the strongest influence
@@ -671,9 +726,9 @@ function splitLogoGrow(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
         renderLeafGrow(x, y, w, h, ix, iy, iw, ih, nodeId);
         return;
     }
-    let crx = 0.5 + amp * Math.sin(tt * (0.0015 + n * 0.0015) + n * 50);
+    let crx = (anchorLogo && n === 0) ? 0.5 : 0.5 + amp * Math.sin(tt * (0.0015 + n * 0.0015) + n * 50);
     crx = Math.max(Math.min(crx, 1 - minRatio), minRatio);
-    let cry = 0.5 + amp * Math.cos(tt * (0.0015 + n * 0.0015) + n * 9930);
+    let cry = (anchorLogo && n === 0) ? 0.5 : 0.5 + amp * Math.cos(tt * (0.0015 + n * 0.0015) + n * 9930);
     cry = Math.max(Math.min(cry, 1 - minRatio), minRatio);
     let ww = w * crx,   ww2 = w * (1 - crx);
     let hh = h * cry,   hh2 = h * (1 - cry);
@@ -849,9 +904,9 @@ function drawExpand() {
 
 function splitLogoExpand(x, y, w, h, ix, iy, iw, ih, n, nodeId) {
     let { amp } = LOGO;
-    let crx = 0.5 + amp * Math.sin(expandTT * (0.003 + n * 0.003) + n * 50);
+    let crx = (anchorLogo && n === 0) ? 0.5 : 0.5 + amp * Math.sin(expandTT * (0.003 + n * 0.003) + n * 50);
     crx = Math.max(Math.min(crx, 1 - minRatio), minRatio);
-    let cry = 0.5 + amp * Math.cos(expandTT * (0.003 + n * 0.003) + n * 9930);
+    let cry = (anchorLogo && n === 0) ? 0.5 : 0.5 + amp * Math.cos(expandTT * (0.003 + n * 0.003) + n * 9930);
     cry = Math.max(Math.min(cry, 1 - minRatio), minRatio);
 
     if (n >= maxDepth) {
@@ -941,9 +996,9 @@ function ensureBurstCanvas() {
 // Deterministic leaf-cell collector (mirrors splitLogoImages recursion at t=0).
 function collectBurstSeeds(x, y, w, h, ix, iy, iw, ih, n) {
     let { amp } = LOGO;
-    let crx = 0.5 + amp * Math.sin(n * 50.0);
+    let crx = (anchorLogo && n === 0) ? 0.5 : 0.5 + amp * Math.sin(n * 50.0);
     crx = Math.max(Math.min(crx, 1 - minRatio), minRatio);
-    let cry = 0.5 + amp * Math.cos(n * 9930.0);
+    let cry = (anchorLogo && n === 0) ? 0.5 : 0.5 + amp * Math.cos(n * 9930.0);
     cry = Math.max(Math.min(cry, 1 - minRatio), minRatio);
     if (n >= maxDepth) return [{ x, y, w, h, ix, iy, iw, ih }];
     let ww = w * crx, ww2 = w - ww, hh = h * cry, hh2 = h - hh;
@@ -1734,6 +1789,8 @@ function buildUI() {
                      addCheckbox(panel, 'lines & logo', false, v => { showLinesLogo = v; });
                      addCheckbox(panel, 'voronoi',    showVoronoi, v => { showVoronoi = v; });
     logoOnlyCtrl =   addCheckbox(panel, 'logo only',  logoOnly,    v => { logoOnly = v; });
+                     addCheckbox(panel, 'anchor logo', anchorLogo, v => { anchorLogo = v; });
+                     addCheckbox(panel, 'reset grid', resetGrid, v => { resetGrid = v; if (!v && _rgPhase !== 'idle') { maxDepth = _rgUserDepth; minRatio = _rgUserRatio; } _rgPhase = 'idle'; _rgTick = 0; });
     logoSizeCtrl =   addSliderRow(panel, 'logo size', 0.2, 1.0, logoScale, 0.01, v => { logoScale = v; });
 
     // ── Content cells section ─────────────────────────────────────────────────
